@@ -15,6 +15,8 @@ function parseArgs(argv) {
     k: 1,
     limit: undefined,
     model: undefined,
+    claudeModel: undefined,
+    codexModel: undefined,
     modelReasoningEffort: process.env.CODEX_MODEL_REASONING_EFFORT || DEFAULT_CODEX_REASONING_EFFORT,
     maxTurns: 40,
     permissionMode: "acceptEdits",
@@ -30,6 +32,8 @@ function parseArgs(argv) {
     else if (arg === "--k") args.k = Number(argv[++i]);
     else if (arg === "--limit") args.limit = Number(argv[++i]);
     else if (arg === "--model") args.model = argv[++i];
+    else if (arg === "--claude-model") args.claudeModel = argv[++i];
+    else if (arg === "--codex-model") args.codexModel = argv[++i];
     else if (arg === "--model-reasoning-effort") args.modelReasoningEffort = argv[++i];
     else if (arg === "--max-turns") args.maxTurns = Number(argv[++i]);
     else if (arg === "--permission-mode") args.permissionMode = argv[++i];
@@ -132,7 +136,9 @@ function queueProgressWrite() {
 }
 
 await runBounded(jobs, concurrency, async (job, _jobIndex, workerId) => {
-  const model = args.model || job.harness.defaultModel;
+  const harnessModel =
+    job.harness.name === "claude-code" ? args.claudeModel : job.harness.name === "codex" ? args.codexModel : undefined;
+  const model = args.model || harnessModel || job.harness.defaultModel;
   const jobArgs = { ...args, model };
   console.log(`[worker ${workerId}] ${job.harness.name} ${job.row.instance_id} attempt ${job.attemptIndex}/${args.k}`);
   try {

@@ -1,37 +1,59 @@
 # autonomy_calibration
 
-Shared harness for running coding agents against SWE-bench Pro and aggregating official evaluator results.
+Harness for evaluating coding-agent SDKs on SWE-bench Pro tasks with official evaluator results and pass@k aggregation.
 
-Default agents:
+The repo currently compares:
 
-- Claude Code: `claude-sonnet-4-6`
-- Codex: `gpt-5.5` with reasoning effort `low`
+- Claude Code via `@anthropic-ai/claude-agent-sdk`, default model `claude-sonnet-4-6`
+- Codex via `@openai/codex-sdk`, default model `gpt-5.5` with reasoning effort `low`
 
-## Layout
+Both harnesses use LiteLLM credentials from `HIL_BENCH` or the shared AWS secret fallback. The primary output is a per-harness pass@k summary over official SWE-bench Pro evaluation artifacts, plus full per-attempt trajectories for inspection.
 
-- `src/shared/`: credentials, dataset prompts, git/workspace helpers, redaction, bounded concurrency, and artifact utilities.
-- `src/harnesses/claude-code/`: Claude Code SDK adapter using `@anthropic-ai/claude-agent-sdk`.
-- `src/harnesses/codex/`: Codex SDK adapter using `@openai/codex-sdk` and `@openai/codex`.
-- `scripts/`: SWE-bench Pro sample download, official evaluator wrapper, pass@k summary, probes, and smoke fixtures.
-- `data/`: sampled dataset rows and manifests.
-- `evals/`: generated attempts, normalized predictions, evaluator logs, and metrics.
-- `vendor/`: official SWE-bench Pro evaluator checkout from `scaleapi/SWE-bench_Pro-os`.
+## Quick Run
 
-Each attempt emits `attempt.json`, `prompt.md`, `trajectory.jsonl`, `patch.diff`, and `prediction.json` under:
+After setup, this single command runs generation, official evaluation, and pass@k summarization:
 
-```text
-evals/<run_id>/trajectories/<harness>/<instance_id>/attempt-<i>/
+```sh
+npm run passk -- --limit 1 --k 3 --harness all
 ```
 
-`trajectory.jsonl` is the manual inspection record for the attempt. It captures attempt metadata, checkout commands, SDK-visible messages/events, tool calls/results as exposed by the SDK, SDK errors, the final submission record, and patch/prediction paths. Private hidden model chain-of-thought is not available unless the SDK emits reasoning summaries, but all SDK-visible thinking summaries, decisions, commands, submissions, and errors are preserved verbatim in JSONL.
+It prints the selected data size, pass@k value, harnesses, models, and final pass@k numbers. Defaults are:
 
-If an interrupted or stale attempt directory already exists, a fresh non-skipped attempt archives it under `evals/<run_id>/stale-attempts/` before writing a new `trajectory.jsonl`, so reruns do not append unrelated events into the active attempt record.
+- `--limit 1`
+- `--k 3`
+- `--harness all`
+- `--claude-model claude-sonnet-4-6`
+- `--codex-model gpt-5.5`
+- `--codex-reasoning-effort low`
+- `--attempt-timeout-ms 900000`
 
-`predictions.json` is normalized for the official evaluator with records containing at least:
+Useful variants:
 
-```json
-{ "instance_id": "...", "patch": "diff --git ...", "prefix": "..." }
+```sh
+npm run passk -- --limit 5 --k 3 --harness claude-code --run-id claude-k3-n5
+npm run passk -- --limit 5 --k 3 --harness codex --run-id codex-k3-n5
+npm run passk -- --limit 10 --k 5 --harness all --run-id both-k5-n10
+npm run passk -- --limit 3 --k 3 --harness all --claude-model claude-sonnet-4-6 --codex-model gpt-5.5 --codex-reasoning-effort low
 ```
+
+`npm run passk` writes artifacts under `evals/<run_id>/`, then prints `summary.md`. The generated `metrics.json` contains the machine-readable observed pass@k and unbiased pass@k values.
+
+## Setup
+
+```sh
+npm install
+python3 -m pip install -r requirements.txt
+npm run setup-vendor
+npm run download-samples
+```
+
+`setup-vendor` clones `https://github.com/scaleapi/SWE-bench_Pro-os.git` into `vendor/SWE-bench_Pro-os`. Override with `SWEBENCH_PRO_REPO` if you need a fork.
+
+`download-samples` creates:
+
+- `data/swebench_pro_samples.jsonl` for generation
+- `data/swebench_pro_samples.csv` for the official evaluator
+- `data/sample_manifest.json` describing the deterministic sample
 
 ## Credentials
 
@@ -43,7 +65,7 @@ Runtime credentials stay out of files. The shared loader checks:
 4. `LITELLM_API_KEY`
 5. AWS Secrets Manager key `HIL_BENCH` inside `team/GENAIML/secret-store-key` in `us-west-2`
 
-Recommended defaults on the devbox:
+Recommended devbox defaults:
 
 ```sh
 export AWS_PROFILE=production-developer
@@ -51,20 +73,40 @@ export ANTHROPIC_BASE_URL=https://litellm-proxy.ml-serving-internal.scale.com
 export LITELLM_BASE_URL=https://litellm-proxy.ml-serving-internal.scale.com
 ```
 
-The Node credential loader also defaults AWS secret lookup to `AWS_PROFILE=production-developer` when the variable is not already set, matching the probe defaults.
+The Node credential loader defaults AWS secret lookup to `AWS_PROFILE=production-developer` when the variable is unset.
 
-## Setup
+## Repository Layout
 
-```sh
-npm install
-python3 -m pip install -r requirements.txt
-npm run setup-vendor
-npm run download-samples
+- `src/cli/generate.mjs`: normalized prediction generation CLI.
+- `src/harnesses/claude-code/`: Claude Code SDK adapter.
+- `src/harnesses/codex/`: Codex SDK adapter.
+- `src/shared/`: credentials, dataset prompts, git/workspace helpers, redaction, bounded concurrency, and artifact utilities.
+- `scripts/run_passk.mjs`: one-command generate/evaluate/summarize runner.
+- `scripts/evaluate_official.py`: wrapper around the official SWE-bench Pro evaluator.
+- `scripts/summarize_passk.py` and `scripts/passk.py`: per-attempt result parsing and pass@k aggregation.
+- `scripts/download_samples.py`: deterministic SWE-bench Pro sample downloader.
+- `scripts/setup_vendor.py`: official evaluator checkout setup.
+- `scripts/probe_*.mjs` and `test_litellm.py`: LiteLLM, Claude Code, and Codex connectivity probes.
+- `tests/`: unit tests for concurrency and pass@k/evaluator parsing.
+- `data/`: sampled dataset rows and manifests.
+- `evals/`: generated attempts, normalized predictions, evaluator logs, summaries, and metrics.
+- `vendor/`: official SWE-bench Pro evaluator checkout.
+
+## Agent Harnesses
+
+Claude Code uses the Anthropic SDK with the LiteLLM token exposed as `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`. It enforces the attempt workspace boundary through the SDK permission hook.
+
+Codex uses the Codex SDK with a named OpenAI-compatible LiteLLM provider at `/v1`:
+
+```text
+model_provider = litellm
+wire_api = responses
+requires_openai_auth = true
 ```
 
-`setup-vendor` clones `https://github.com/scaleapi/SWE-bench_Pro-os.git` by default. Override with `SWEBENCH_PRO_REPO` if you need a fork.
+This keeps Codex on the LiteLLM Responses/Codex protocol path and avoids falling back to local Codex login.
 
-## Probes
+Probe the endpoints directly with:
 
 ```sh
 npm run probe:litellm
@@ -72,42 +114,79 @@ npm run probe:claude
 npm run probe:codex
 ```
 
-The Codex probe intentionally uses the LiteLLM proxy by default. Codex is configured as a named OpenAI-compatible LiteLLM provider at `/v1` with `wire_api="responses"` and `requires_openai_auth=true`. This avoids the bare `openai_base_url` path where the current proxy rejects the Responses websocket upgrade at `/responses`; the CLI can then use the HTTP Responses/SSE-compatible path instead of falling back to local Codex login.
+## Artifacts
 
-## Generate
+Each attempt emits:
 
-```sh
-npm run generate -- --harness claude-code --k 1 --limit 5 --run-id claude-k1-smoke
-npm run generate -- --harness codex --k 1 --limit 5 --run-id codex-k1-smoke
-npm run generate -- --harness all --k 1 --limit 5 --run-id both-k1-smoke
-npm run smoke:pass3:generate
+```text
+evals/<run_id>/trajectories/<harness>/<instance_id>/attempt-<i>/
+  attempt.json
+  prompt.md
+  trajectory.jsonl
+  patch.diff
+  prediction.json
 ```
 
-Generation concurrency defaults to the minimum of total jobs, `HARNESS_MAX_CONCURRENCY` (default `8`), `floor(cpu_count / 24)`, and a memory budget using `HARNESS_GENERATE_WORKER_MEMORY_GB` (default `12`). Override explicitly with `--concurrency` or `HARNESS_CONCURRENCY`. For smoke tests against flaky or incompatible SDK endpoints, bound attempts with `--attempt-timeout-ms` or `HARNESS_ATTEMPT_TIMEOUT_MS`; timed-out attempts and setup failures still write the standard prediction/artifact contract with `sdk_error`.
+`trajectory.jsonl` is the manual inspection record. It captures attempt metadata, checkout commands, SDK-visible messages/events, tool calls/results as exposed by the SDK, SDK errors, final submission metadata, and patch/prediction paths. Private hidden model chain-of-thought is not available unless an SDK emits reasoning summaries, but all SDK-visible reasoning summaries, decisions, commands, submissions, and errors are preserved verbatim in JSONL.
 
-Claude Code defaults to `claude-sonnet-4-6`. Codex defaults to `gpt-5.5` with reasoning effort `low`; override with `--model` and `--model-reasoning-effort`. `--max-turns` is enforced by Claude Code. The current Codex TypeScript SDK does not expose a max-turn limiter, so Codex attempts should be bounded with `--attempt-timeout-ms` for smoke tests and scheduler control.
+If a stale attempt directory already exists, a fresh non-resume run archives it under `evals/<run_id>/stale-attempts/` before writing a new trajectory.
 
-By default `repo` is a symlink to an isolated `/tmp` checkout, which avoids expensive EFS copies while preserving the documented attempt path. Set `HARNESS_WORKSPACE_PLACEMENT=copy` if a physical checkout under `evals/` is required.
+`predictions.json` is normalized for the official evaluator:
 
-## Evaluate And Summarize
+```json
+{ "instance_id": "...", "patch": "diff --git ...", "prefix": "...", "harness": "...", "attempt_index": 1 }
+```
+
+## Pass@k Correctness
+
+The summarizer reports:
+
+- observed top-k pass rate: whether any of the first `k` attempts for an instance passed
+- standard unbiased pass@k estimator: `1 - C(n-c, k) / C(n, k)` when `n >= k`
+
+Runs generated with `--harness all` are summarized per harness, so Claude Code and Codex attempts for the same instance are never mixed. Multi-attempt runs use per-prefix official evaluator artifacts instead of the evaluator's top-level `eval_results.json`, because that file is keyed only by `instance_id`. Stale evaluator outputs older than `predictions.json` or the latest evaluator command are rejected.
+
+Generation failures and SDK timeouts are included as failed attempts with empty patches and `sdk_error` populated, so pass@k denominators stay correct.
+
+## Concurrency
+
+Generation uses a bounded worker pool. Default concurrency is the minimum of:
+
+- total jobs
+- `HARNESS_MAX_CONCURRENCY`, default `8`
+- `floor(cpu_count / 24)`
+- available memory divided by `HARNESS_GENERATE_WORKER_MEMORY_GB`, default `12`
+
+Override with `--concurrency` on `npm run passk` or `npm run generate`, or set `HARNESS_CONCURRENCY`.
+
+Official evaluation defaults to `min(8, floor(cpu_count / 32))` workers. Override with `--eval-workers` on `npm run passk`, `--num-workers` on `scripts/evaluate_official.py`, or `SWEBENCH_EVAL_WORKERS`.
+
+By default `repo` inside each attempt is a symlink to an isolated `/tmp` checkout, avoiding expensive EFS copies while preserving the documented attempt path. Set `HARNESS_WORKSPACE_PLACEMENT=copy` if a physical checkout under `evals/` is required.
+
+## Lower-Level Commands
+
+The one-command runner is preferred for normal use, but the phases can be run independently:
 
 ```sh
-python3 scripts/evaluate_official.py --run-id claude-k1-smoke
-python3 scripts/summarize_passk.py --run-id claude-k1-smoke --k 1
+npm run generate -- --harness all --k 3 --limit 1 --run-id both-pass3-smoke
+python3 scripts/evaluate_official.py --run-id both-pass3-smoke
+python3 scripts/summarize_passk.py --run-id both-pass3-smoke --k 3
+```
+
+Evaluation removes exact per-prefix evaluator artifacts and forces the official evaluator's `--redo` flag by default, so reusing a `RUN_ID` cannot silently reuse stale per-attempt outputs. Use `--reuse-existing` or `--reuse-existing-eval` only when you intentionally want cached evaluator artifacts.
+
+The compatibility smoke scripts are aliases around the same flow:
+
+```sh
+npm run smoke:pass3:generate
 npm run smoke:pass3:evaluate
 npm run smoke:pass3:summarize
 ```
 
-The evaluator worker count defaults to `min(8, floor(cpu_count / 32))`; override with `--num-workers` or `SWEBENCH_EVAL_WORKERS`. Evaluation removes exact per-prefix evaluator artifacts and forces the official evaluator's `--redo` flag by default so reusing a `RUN_ID` cannot silently reuse stale per-attempt outputs; pass `--reuse-existing` only when you intentionally want cached evaluator artifacts. The summarizer reports observed top-k pass rate and the standard unbiased pass@k estimator `1 - C(n-c, k) / C(n, k)` when `n >= k`. Runs generated with `--harness all` are summarized per harness so Claude Code and Codex attempts for the same instance are not mixed. For multi-attempt runs, the wrapper uses per-attempt official output/log artifacts instead of the evaluator's top-level `eval_results.json`, which is keyed only by `instance_id`; it also rejects stale evaluator outputs older than `predictions.json` or the latest evaluator command and strips ANSI/xdist terminal artifacts before comparing required SWE-bench test names.
-
-## Pass@3 Smoke
-
-The canonical one-problem, three-attempt-per-agent smoke is:
+## Tests
 
 ```sh
-npm run smoke:pass3:generate
-npm run smoke:pass3:evaluate
-npm run smoke:pass3:summarize
+npm test
 ```
 
-This creates six attempts total under `evals/both-pass3-smoke/` by default: three Claude Code attempts and three Codex attempts for the first sampled SWE-bench Pro instance. Set `RUN_ID=<name>` to write a different smoke run. The generated `metrics.json` and `summary.md` report pass@3 separately for `claude-code` and `codex`; missing evaluator outputs are counted as failed attempts and listed explicitly.
+The test suite covers bounded generation concurrency, pass@k formulas, per-harness aggregation, stale evaluator output rejection, ambiguous instance-keyed fallback protection, and xdist/ANSI evaluator log parsing.

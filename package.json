@@ -10,6 +10,7 @@
     "probe:litellm": "AWS_PROFILE=${AWS_PROFILE:-production-developer} /usr/bin/python3 test_litellm.py",
     "download-samples": "python3 scripts/download_samples.py --limit 5",
     "setup-vendor": "python3 scripts/setup_vendor.py",
+    "passk": "node scripts/run_passk.mjs",
     "evaluate": "python3 scripts/evaluate_official.py",
     "summarize": "python3 scripts/summarize_passk.py",
     "smoke:pass3:generate": "node src/cli/generate.mjs --harness all --k 3 --limit 1 --run-id ${RUN_ID:-both-pass3-smoke} --attempt-timeout-ms ${HARNESS_ATTEMPT_TIMEOUT_MS:-900000}",
