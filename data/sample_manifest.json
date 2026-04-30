@@ -1,0 +1,41 @@
+{
+  "csv_path": "/mnt/efs/mohamedelfeki/Codes/autonomy_calibration/data/swebench_pro_samples.csv",
+  "dataset": "ScaleAI/SWE-bench_Pro",
+  "instances": [
+    {
+      "base_commit": "f7234968d241d7171aadb1e873a67510753f3163",
+      "dockerhub_tag": "ansible.ansible-ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
+      "instance_id": "instance_ansible__ansible-0ea40e09d1b35bcb69ff4d9cecf3d0defa4b36e8-v30a923fb5c164d6cd18280c02422f75e611e8fb2",
+      "repo": "ansible/ansible"
+    },
+    {
+      "base_commit": "0044091a055dd9cd448f7639a65b7e8cc3dacbf1",
+      "dockerhub_tag": "ansible.ansible-ansible__ansible-83fb24b923064d3576d473747ebbe62e4535c9e3-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "instance_id": "instance_ansible__ansible-83fb24b923064d3576d473747ebbe62e4535c9e3-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "repo": "ansible/ansible"
+    },
+    {
+      "base_commit": "de01db08d00c8d2438e1ba5989c313ba16a145b0",
+      "dockerhub_tag": "ansible.ansible-ansible__ansible-12734fa21c08a0ce8c84e533abdc560db2eb1955-v7eee2454f617569fd6889f2211f75bc02a35f9f8",
+      "instance_id": "instance_ansible__ansible-12734fa21c08a0ce8c84e533abdc560db2eb1955-v7eee2454f617569fd6889f2211f75bc02a35f9f8",
+      "repo": "ansible/ansible"
+    },
+    {
+      "base_commit": "a77dbf08663e002198d0fa2af502d5cde8009454",
+      "dockerhub_tag": "ansible.ansible-ansible__ansible-e22e103cdf8edc56ff7d9b848a58f94f1471a263-v1055803c3a812189a1133297f7f5468579283f86",
+      "instance_id": "instance_ansible__ansible-e22e103cdf8edc56ff7d9b848a58f94f1471a263-v1055803c3a812189a1133297f7f5468579283f86",
+      "repo": "ansible/ansible"
+    },
+    {
+      "base_commit": "709484969c8a4ffd74b839a673431a8c5caa6457",
+      "dockerhub_tag": "ansible.ansible-ansible__ansible-3db08adbb1cc6aa9941be5e0fc810132c6e1fa4b-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "instance_id": "instance_ansible__ansible-3db08adbb1cc6aa9941be5e0fc810132c6e1fa4b-vba6da65a0f3baefda7a058ebbd0a8dcafb8512f5",
+      "repo": "ansible/ansible"
+    }
+  ],
+  "jsonl_path": "/mnt/efs/mohamedelfeki/Codes/autonomy_calibration/data/swebench_pro_samples.jsonl",
+  "limit": 5,
+  "repo": "ansible/ansible",
+  "selection": "deterministic single-repo low-friction sample",
+  "split": "test"
+}

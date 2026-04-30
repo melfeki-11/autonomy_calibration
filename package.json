@@ -1,0 +1,22 @@
+{
+  "name": "autonomy-calibration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node src/cli/generate.mjs",
+    "probe:claude": "node scripts/probe_claude_code.mjs",
+    "probe:codex": "node scripts/probe_codex.mjs",
+    "probe:litellm": "AWS_PROFILE=${AWS_PROFILE:-production-developer} /usr/bin/python3 test_litellm.py",
+    "download-samples": "python3 scripts/download_samples.py --limit 5",
+    "setup-vendor": "python3 scripts/setup_vendor.py",
+    "evaluate": "python3 scripts/evaluate_official.py",
+    "summarize": "python3 scripts/summarize_passk.py",
+    "test": "node --test tests/*.test.mjs && python3 -m unittest discover -s tests -p '*_test.py'"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.123",
+    "@openai/codex": "^0.128.0",
+    "@openai/codex-sdk": "^0.128.0"
+  }
+}

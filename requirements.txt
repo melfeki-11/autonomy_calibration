@@ -1,0 +1,9 @@
+awscli
+boto3
+datasets
+docker
+litellm
+modal
+pandas
+pyarrow
+tqdm
