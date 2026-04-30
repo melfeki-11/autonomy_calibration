@@ -134,6 +134,20 @@ def statuses_from_output(parsed: Any) -> dict[str, str]:
     return statuses
 
 
+def scheduled_tests_from_log(text: str) -> list[str]:
+    marker = "scheduling tests via"
+    if marker not in text:
+        return []
+    block = text.split(marker, 1)[1]
+    block = re.split(r"\n\[gw\d+\]", block, 1)[0]
+    tests = []
+    for line in block.splitlines():
+        line = line.strip()
+        if line.startswith("test/"):
+            tests.append(base_test_name(line))
+    return [name for name in dict.fromkeys(tests) if name]
+
+
 def statuses_from_logs(*paths: Path) -> dict[str, str]:
     statuses: dict[str, str] = {}
     for path in paths:
@@ -142,7 +156,9 @@ def statuses_from_logs(*paths: Path) -> dict[str, str]:
         text = strip_ansi(path.read_text(encoding="utf-8", errors="replace"))
         for match in STATUS_RE.finditer(text):
             add_status(statuses, match.group(2), match.group(1))
-        scheduled = [name for name in dict.fromkeys(base_test_name(match.group(1)) for match in TEST_NAME_RE.finditer(text)) if name]
+        scheduled = scheduled_tests_from_log(text)
+        if not scheduled:
+            scheduled = [name for name in dict.fromkeys(base_test_name(match.group(1)) for match in TEST_NAME_RE.finditer(text)) if name]
         passed_summary = ALL_PASSED_RE.search(text)
         if passed_summary and int(passed_summary.group(1)) == len(scheduled):
             for test_name in scheduled:
@@ -168,11 +184,20 @@ def load_raw_samples(samples_path: Path) -> dict[str, dict[str, Any]]:
     return {str(row["instance_id"]): row for row in rows}
 
 
-def collect_attempt_outputs(run_dir: Path, samples_path: Path) -> dict[str, bool]:
+def collect_attempt_outputs(run_dir: Path, samples_path: Path, predictions_path: Path | None = None) -> dict[str, bool]:
     raw_samples = load_raw_samples(samples_path)
     official_dir = run_dir / "official-eval"
     results: dict[str, bool] = {}
+    freshness_floor = predictions_path.stat().st_mtime if predictions_path and predictions_path.exists() else None
+    command_path = official_dir / "command.json"
+    if command_path.exists():
+        command_mtime = command_path.stat().st_mtime
+        freshness_floor = command_mtime if freshness_floor is None else max(freshness_floor, command_mtime)
+    stale_outputs: list[Path] = []
     for output_path in official_dir.glob("*/*_output.json"):
+        if freshness_floor is not None and output_path.stat().st_mtime < freshness_floor:
+            stale_outputs.append(output_path)
+            continue
         instance_id = output_path.parent.name
         prefix = output_path.name[: -len("_output.json")]
         sample = raw_samples.get(instance_id)
@@ -187,6 +212,14 @@ def collect_attempt_outputs(run_dir: Path, samples_path: Path) -> dict[str, bool
             continue
         required = parse_listish(sample.get("fail_to_pass")) | parse_listish(sample.get("pass_to_pass"))
         results[prefix] = all(required_test_passed(test, statuses) for test in required)
+    if stale_outputs:
+        rendered = "\n".join(f"- {path}" for path in stale_outputs[:10])
+        more = "" if len(stale_outputs) <= 10 else f"\n... and {len(stale_outputs) - 10} more"
+        raise SystemExit(
+            "Stale official evaluator outputs are older than predictions.json or the latest evaluator command. "
+            "Rerun evaluation without --reuse-existing or use a fresh RUN_ID.\n"
+            f"{rendered}{more}"
+        )
     return results
 
 
@@ -265,7 +298,7 @@ def main() -> None:
     if not predictions_path.exists():
         raise SystemExit(f"Missing predictions: {predictions_path}")
     predictions = predictions_with_failures(run_dir, json.loads(predictions_path.read_text(encoding="utf-8")))
-    official = collect_attempt_outputs(run_dir, args.samples) or collect_official_results(run_dir)
+    official = collect_attempt_outputs(run_dir, args.samples, predictions_path) or collect_official_results(run_dir)
     harnesses = sorted({str(prediction.get("harness") or "unknown") for prediction in predictions})
     if len(harnesses) <= 1:
         by_instance = build_attempts(predictions, official)

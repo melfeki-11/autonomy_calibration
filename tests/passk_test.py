@@ -1,9 +1,11 @@
 import unittest
+import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.passk import build_attempts, build_harness_attempts, compute_passk, unbiased_estimate
-from scripts.summarize_passk import required_test_passed, statuses_from_logs, statuses_from_output
+from scripts.summarize_passk import collect_attempt_outputs, required_test_passed, scheduled_tests_from_log, statuses_from_logs, statuses_from_output
 
 
 class PassKTest(unittest.TestCase):
@@ -142,6 +144,41 @@ class PassKTest(unittest.TestCase):
             statuses = statuses_from_logs(stdout)
         self.assertTrue(required_test_passed("test/units/utils/test_vars.py::TestVariableUtils::test_one", statuses))
         self.assertTrue(required_test_passed("test/units/utils/test_vars.py::TestVariableUtils::test_two", statuses))
+
+    def test_scheduled_tests_ignore_interleaved_worker_output(self):
+        text = (
+            "scheduling tests via LoadScheduling\n\n"
+            "test/units/utils/test_vars.py::TestVariableUtils::test_one \n"
+            "test/units/utils/test_vars.py::TestVariableUtils::test_two \n"
+            "[gw0] [ 50%] PASSED test/units/utils/test_vars.py::TestVariableUtils::test_one"
+            "[gw1] [100%] PASSED test/units/utils/test_vars.py::TestVariableUtils::test_tw\n"
+            "============================= 2 passed in 1.23s ==============================\n"
+        )
+        self.assertEqual(
+            scheduled_tests_from_log(text),
+            [
+                "test/units/utils/test_vars.py::TestVariableUtils::test_one",
+                "test/units/utils/test_vars.py::TestVariableUtils::test_two",
+            ],
+        )
+
+    def test_stale_eval_outputs_are_rejected(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "run"
+            official = run_dir / "official-eval" / "inst"
+            official.mkdir(parents=True)
+            command = run_dir / "official-eval" / "command.json"
+            command.write_text("[]", encoding="utf-8")
+            output = official / "prefix_output.json"
+            output.write_text(json.dumps({"tests": []}), encoding="utf-8")
+            predictions = run_dir / "predictions.json"
+            predictions.write_text("[]", encoding="utf-8")
+            os.utime(output, (1, 1))
+            os.utime(predictions, (2, 2))
+            os.utime(command, (3, 3))
+            with self.assertRaises(SystemExit):
+                collect_attempt_outputs(run_dir, root / "samples.csv", predictions)
 
 
 if __name__ == "__main__":

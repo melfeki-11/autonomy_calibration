@@ -34,6 +34,24 @@ def docker_env() -> dict[str, str]:
     return env
 
 
+def clean_existing_outputs(predictions: Path, out_dir: Path) -> None:
+    try:
+        rows = json.loads(predictions.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"Could not read predictions for evaluator cleanup: {predictions}: {exc}") from exc
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        instance_id = str(row.get("instance_id") or "")
+        prefix = str(row.get("prefix") or "")
+        if not instance_id or not prefix:
+            continue
+        attempt_dir = out_dir / instance_id
+        for suffix in ("_output.json", "_stdout.log", "_stderr.log", "_entryscript.sh", "_patch.diff"):
+            (attempt_dir / f"{prefix}{suffix}").unlink(missing_ok=True)
+    (out_dir / "eval_results.json").unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
@@ -42,6 +60,7 @@ def main() -> None:
     parser.add_argument("--vendor", type=Path, default=ROOT / "vendor" / "SWE-bench_Pro-os")
     parser.add_argument("--dockerhub-username", default="jefzda")
     parser.add_argument("--no-local-docker", action="store_true")
+    parser.add_argument("--reuse-existing", action="store_true", help="Reuse existing per-attempt evaluator outputs instead of forcing --redo.")
     parser.add_argument("--num-workers", type=int, default=default_eval_workers())
     parser.add_argument("--extra-arg", action="append", default=[])
     args = parser.parse_args()
@@ -59,6 +78,8 @@ def main() -> None:
 
     out_dir = run_dir / "official-eval"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if not args.reuse_existing:
+        clean_existing_outputs(predictions, out_dir)
     command = [
         sys.executable,
         str(evaluator),
@@ -77,6 +98,8 @@ def main() -> None:
     ]
     if not args.no_local_docker:
         command.append("--use_local_docker")
+    if not args.reuse_existing:
+        command.append("--redo")
     command.extend(args.extra_arg)
     (out_dir / "command.json").write_text(json.dumps(command, indent=2) + "\n", encoding="utf-8")
     with (out_dir / "stdout.log").open("w", encoding="utf-8") as stdout, (out_dir / "stderr.log").open("w", encoding="utf-8") as stderr:
