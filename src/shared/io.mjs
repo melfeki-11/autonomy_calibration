@@ -25,6 +25,13 @@ export async function writeJson(filePath, value) {
   await fs.writeFile(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
 }
 
+export async function writeJsonAtomic(filePath, value) {
+  await ensureDir(path.dirname(filePath));
+  const tempPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
+  await fs.writeFile(tempPath, JSON.stringify(value, null, 2) + "\n", "utf8");
+  await fs.rename(tempPath, filePath);
+}
+
 export async function writeText(filePath, text) {
   await ensureDir(path.dirname(filePath));
   await fs.writeFile(filePath, text, "utf8");

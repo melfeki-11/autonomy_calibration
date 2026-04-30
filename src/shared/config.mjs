@@ -11,19 +11,30 @@ export const evalsDir = path.join(rootDir, "evals");
 export const vendorDir = path.join(rootDir, "vendor", "SWE-bench_Pro-os");
 
 export const DEFAULT_BASE_URL = "https://litellm-proxy.ml-serving-internal.scale.com";
-export const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514";
-export const DEFAULT_CODEX_MODEL = "gpt-5.2";
+export const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 export const AWS_SECRET_ID = "team/GENAIML/secret-store-key";
 export const AWS_REGION = "us-west-2";
+export const DEFAULT_AWS_PROFILE = "production-developer";
+export const CODEX_LITELLM_PROVIDER = "litellm";
 
 export function cpuCount() {
-  return os.cpus()?.length || 1;
+  return os.availableParallelism?.() || os.cpus()?.length || 1;
 }
 
 export function defaultGenerateConcurrency(totalJobs) {
+  if (totalJobs <= 0) return 0;
   const fromEnv = Number(process.env.HARNESS_CONCURRENCY || "");
   if (Number.isInteger(fromEnv) && fromEnv > 0) return Math.min(totalJobs, fromEnv);
-  return Math.min(totalJobs, 8, Math.max(1, Math.floor(cpuCount() / 24)));
+  const maxConcurrency = Number(process.env.HARNESS_MAX_CONCURRENCY || 8);
+  const cap = Number.isInteger(maxConcurrency) && maxConcurrency > 0 ? maxConcurrency : 8;
+  const workerMemoryGb = Number(process.env.HARNESS_GENERATE_WORKER_MEMORY_GB || 12);
+  const memoryBased =
+    Number.isFinite(workerMemoryGb) && workerMemoryGb > 0
+      ? Math.max(1, Math.floor(os.totalmem() / (workerMemoryGb * 1024 ** 3)))
+      : Number.POSITIVE_INFINITY;
+  return Math.min(totalJobs, cap, Math.max(1, Math.floor(cpuCount() / 24)), memoryBased);
 }
 
 export function defaultEvalWorkers() {
@@ -34,6 +45,11 @@ export function defaultEvalWorkers() {
 
 export function getBaseUrl() {
   return process.env.LITELLM_BASE_URL || process.env.ANTHROPIC_BASE_URL || DEFAULT_BASE_URL;
+}
+
+export function getResponsesBaseUrl() {
+  const baseUrl = getBaseUrl().replace(/\/+$/, "");
+  return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 }
 
 async function readAwsSecretKey(secretKeyName) {
@@ -49,7 +65,7 @@ async function readAwsSecretKey(secretKeyName) {
     "--output",
     "text",
   ];
-  if (process.env.AWS_PROFILE) args.splice(0, 0, "--profile", process.env.AWS_PROFILE);
+  args.splice(0, 0, "--profile", process.env.AWS_PROFILE || DEFAULT_AWS_PROFILE);
   const { stdout } = await execFileAsync("aws", args, { maxBuffer: 10 * 1024 * 1024 });
   const parsed = JSON.parse(stdout);
   return parsed[secretKeyName];
@@ -77,7 +93,7 @@ export async function claudeEnv(extra = {}) {
   return {
     ...process.env,
     ...extra,
-    AWS_PROFILE: process.env.AWS_PROFILE || "production-developer",
+    AWS_PROFILE: process.env.AWS_PROFILE || DEFAULT_AWS_PROFILE,
     HIL_BENCH: token,
     ANTHROPIC_AUTH_TOKEN: token,
     ANTHROPIC_BASE_URL: baseUrl,
@@ -88,22 +104,32 @@ export async function claudeEnv(extra = {}) {
 export async function codexClientOptions(extraEnv = {}) {
   const token = await getLiteLLMKey();
   const baseUrl = getBaseUrl();
+  const responsesBaseUrl = getResponsesBaseUrl();
   return {
     apiKey: token,
-    baseUrl,
     env: {
       ...process.env,
       ...extraEnv,
-      AWS_PROFILE: process.env.AWS_PROFILE || "production-developer",
+      AWS_PROFILE: process.env.AWS_PROFILE || DEFAULT_AWS_PROFILE,
       HIL_BENCH: token,
       CODEX_API_KEY: token,
       OPENAI_API_KEY: token,
       LITELLM_BASE_URL: baseUrl,
+      CODEX_LITELLM_BASE_URL: responsesBaseUrl,
     },
     config: {
       approval_policy: "never",
       sandbox_mode: "workspace-write",
       sandbox_workspace_write: { network_access: true },
+      model_provider: CODEX_LITELLM_PROVIDER,
+      model_providers: {
+        [CODEX_LITELLM_PROVIDER]: {
+          name: "LiteLLM",
+          base_url: responsesBaseUrl,
+          wire_api: "responses",
+          requires_openai_auth: true,
+        },
+      },
     },
   };
 }

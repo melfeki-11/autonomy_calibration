@@ -1,6 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+export function comparePredictions(left, right) {
+  const lh = String(left.harness || "");
+  const rh = String(right.harness || "");
+  if (lh !== rh) return lh.localeCompare(rh);
+  const li = String(left.instance_id || "");
+  const ri = String(right.instance_id || "");
+  if (li !== ri) return li.localeCompare(ri);
+  return Number(left.attempt_index || 0) - Number(right.attempt_index || 0);
+}
+
 export async function collectRunPredictions(runDir) {
   const files = [];
   async function visit(dir) {
@@ -25,14 +35,6 @@ export async function collectRunPredictions(runDir) {
       console.error(`Skipping unreadable prediction ${file}: ${error}`);
     }
   }
-  predictions.sort((left, right) => {
-    const lh = String(left.harness || "");
-    const rh = String(right.harness || "");
-    if (lh !== rh) return lh.localeCompare(rh);
-    const li = String(left.instance_id || "");
-    const ri = String(right.instance_id || "");
-    if (li !== ri) return li.localeCompare(ri);
-    return Number(left.attempt_index || 0) - Number(right.attempt_index || 0);
-  });
+  predictions.sort(comparePredictions);
   return predictions;
 }

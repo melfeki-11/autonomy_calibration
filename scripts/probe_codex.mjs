@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Codex } from "@openai/codex-sdk";
-import { DEFAULT_CODEX_MODEL, codexClientOptions } from "../src/shared/config.mjs";
+import { DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, codexClientOptions } from "../src/shared/config.mjs";
 
 const timeoutMs = Number(process.env.CODEX_PROBE_TIMEOUT_MS || 60000);
 const abortController = new AbortController();
@@ -9,7 +9,15 @@ const timeoutId = setTimeout(() => abortController.abort(new Error(`Codex probe 
 try {
   const options = await codexClientOptions();
   const codex = new Codex(options);
-  const thread = codex.startThread({ workingDirectory: process.cwd(), skipGitRepoCheck: false, model: process.env.CODEX_MODEL || process.env.LITELLM_MODEL || DEFAULT_CODEX_MODEL, sandboxMode: "workspace-write" });
+  const thread = codex.startThread({
+    workingDirectory: process.cwd(),
+    skipGitRepoCheck: false,
+    model: process.env.CODEX_MODEL || process.env.LITELLM_MODEL || DEFAULT_CODEX_MODEL,
+    modelReasoningEffort: process.env.CODEX_MODEL_REASONING_EFFORT || DEFAULT_CODEX_REASONING_EFFORT,
+    sandboxMode: "workspace-write",
+    networkAccessEnabled: true,
+    approvalPolicy: "never",
+  });
   const { events } = await thread.runStreamed("Reply with exactly PONG.", { signal: abortController.signal });
   let final = "";
   for await (const event of events) {

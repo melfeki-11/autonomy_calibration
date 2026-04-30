@@ -1,6 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from scripts.passk import build_attempts, compute_passk, unbiased_estimate
+from scripts.passk import build_attempts, build_harness_attempts, compute_passk, unbiased_estimate
+from scripts.summarize_passk import required_test_passed, statuses_from_logs, statuses_from_output
 
 
 class PassKTest(unittest.TestCase):
@@ -59,6 +62,86 @@ class PassKTest(unittest.TestCase):
         attempts = build_attempts([{"instance_id": "a", "prefix": "a-1", "attempt_index": 1}], {})
         self.assertIsNone(attempts["a"][0]["resolved"])
         self.assertTrue(attempts["a"][0]["eval_missing"])
+
+    def test_instance_id_fallback_only_when_unambiguous(self):
+        single = build_attempts([{"instance_id": "a", "prefix": "a-1", "attempt_index": 1}], {"a": True})
+        self.assertTrue(single["a"][0]["resolved"])
+
+        multiple = build_attempts(
+            [
+                {"instance_id": "a", "prefix": "a-1", "attempt_index": 1},
+                {"instance_id": "a", "prefix": "a-2", "attempt_index": 2},
+            ],
+            {"a": True},
+        )
+        self.assertIsNone(multiple["a"][0]["resolved"])
+        self.assertIsNone(multiple["a"][1]["resolved"])
+
+    def test_harness_attempts_are_separate(self):
+        predictions = [
+            {"harness": "claude-code", "instance_id": "a", "prefix": "claude-a-1", "attempt_index": 1},
+            {"harness": "codex", "instance_id": "a", "prefix": "codex-a-1", "attempt_index": 1},
+        ]
+        groups = build_harness_attempts(predictions, {"claude-a-1": False, "codex-a-1": True})
+        self.assertEqual(compute_passk(groups["claude-code"], [1])["pass_at_k"]["1"], 0.0)
+        self.assertEqual(compute_passk(groups["codex"], [1])["pass_at_k"]["1"], 1.0)
+
+    def test_output_status_aliases_parameterized_tests(self):
+        statuses = statuses_from_output(
+            {
+                "tests": [
+                    {
+                        "name": "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_append_rp[param]",
+                        "status": "PASSED",
+                    }
+                ]
+            }
+        )
+        self.assertTrue(
+            required_test_passed(
+                "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_append_rp",
+                statuses,
+            )
+        )
+
+    def test_log_statuses_normalize_ansi_and_xdist_glued_lines(self):
+        with TemporaryDirectory() as tmpdir:
+            stdout = Path(tmpdir) / "stdout.log"
+            stdout.write_text(
+                "[gw4]\x1b[36m [ 93%] \x1b[0m\x1b[32mPASSED\x1b[0m "
+                "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_append_rp"
+                "[g[gw8]\x1b[36m [100%] \x1b[0m\x1b[32mPASSED\x1b[0m "
+                "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_replace\n",
+                encoding="utf-8",
+            )
+            statuses = statuses_from_logs(stdout)
+        self.assertTrue(
+            required_test_passed(
+                "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_append_rp",
+                statuses,
+            )
+        )
+        self.assertTrue(
+            required_test_passed(
+                "test/units/utils/test_vars.py::TestVariableUtils::test_merge_hash_non_recursive_and_list_replace",
+                statuses,
+            )
+        )
+
+    def test_log_statuses_use_all_passed_summary_when_node_count_matches(self):
+        with TemporaryDirectory() as tmpdir:
+            stdout = Path(tmpdir) / "stdout.log"
+            stdout.write_text(
+                "test/units/utils/test_vars.py::TestVariableUtils::test_one\n"
+                "test/units/utils/test_vars.py::TestVariableUtils::test_two\n"
+                "[gw0] [ 50%] PASSED test/units/utils/test_vars.py::TestVariableUtils::test_one"
+                "[gw1] [100%] PASSED test/units/utils/test_vars.py::TestVariableUtils::test_one\n"
+                "============================= 2 passed in 1.23s ==============================\n",
+                encoding="utf-8",
+            )
+            statuses = statuses_from_logs(stdout)
+        self.assertTrue(required_test_passed("test/units/utils/test_vars.py::TestVariableUtils::test_one", statuses))
+        self.assertTrue(required_test_passed("test/units/utils/test_vars.py::TestVariableUtils::test_two", statuses))
 
 
 if __name__ == "__main__":

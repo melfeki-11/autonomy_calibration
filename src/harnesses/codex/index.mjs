@@ -1,9 +1,10 @@
 import path from "node:path";
 import { Codex } from "@openai/codex-sdk";
+import { archiveExistingAttempt } from "../../shared/attempts.mjs";
 import { DEFAULT_CODEX_MODEL, codexClientOptions } from "../../shared/config.mjs";
 import { promptForInstance, publicMetadata } from "../../shared/dataset.mjs";
 import { attemptWorkspace, cloneCheckout, diff } from "../../shared/git.mjs";
-import { appendJsonl, ensureDir, pathExists, writeJson, writeText } from "../../shared/io.mjs";
+import { appendJsonl, ensureDir, pathExists, writeJson, writeJsonAtomic, writeText } from "../../shared/io.mjs";
 
 export const harness = {
   name: "codex",
@@ -34,7 +35,16 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     return prediction;
   }
 
+  const archivedTo = await archiveExistingAttempt({ runDir, attemptDir, harnessName: harness.name, instanceId, attemptIndex });
   await ensureDir(attemptDir);
+  if (archivedTo) {
+    await appendJsonl(trajectoryFile, {
+      type: "attempt_archive_previous",
+      timestamp: new Date().toISOString(),
+      archived_to: archivedTo,
+      reason: args.resume ? "resume_incomplete_attempt" : "fresh_rerun",
+    });
+  }
   const prompt = `${promptForInstance(row)}\nUse the available shell/editing tools to make the fix. Do not ask for approval; work only inside this checkout.`;
   await writeText(path.join(attemptDir, "prompt.md"), prompt);
   await writeJson(path.join(attemptDir, "attempt.json"), {
@@ -44,7 +54,9 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     attempt_index: attemptIndex,
     prefix: predictionPrefix,
     model: args.model,
+    model_reasoning_effort: args.modelReasoningEffort,
     max_turns: args.maxTurns,
+    max_turns_enforced: false,
     attempt_timeout_ms: args.attemptTimeoutMs,
     metadata_shown_to_agent: publicMetadata(row),
     started_at: new Date().toISOString(),
@@ -61,16 +73,23 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     : null;
   try {
     const codexHome = path.join(attemptDir, ".codex-home");
+    const attemptHome = path.join(attemptDir, ".home");
+    const ansibleLocalTemp = path.join(attemptDir, ".ansible-tmp");
     await ensureDir(codexHome);
-    const options = await codexClientOptions({ CODEX_HOME: codexHome });
+    await ensureDir(attemptHome);
+    await ensureDir(ansibleLocalTemp);
+    const options = await codexClientOptions({ CODEX_HOME: codexHome, HOME: attemptHome, ANSIBLE_LOCAL_TEMP: ansibleLocalTemp });
     const codex = new Codex(options);
     const thread = codex.startThread({
       workingDirectory: workspaceDir,
       skipGitRepoCheck: false,
       model: args.model,
+      modelReasoningEffort: args.modelReasoningEffort,
       sandboxMode: "workspace-write",
+      networkAccessEnabled: true,
+      approvalPolicy: "never",
     });
-    const turnOptions = { maxTurns: args.maxTurns };
+    const turnOptions = {};
     if (abortController) turnOptions.signal = abortController.signal;
     const { events } = await thread.runStreamed(prompt, turnOptions);
     for await (const event of events) {
@@ -87,7 +106,16 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
   const patch = await diff(workspaceDir, trajectoryFile);
   await writeText(path.join(attemptDir, "patch.diff"), patch);
   const prediction = { instance_id: instanceId, patch, prefix: predictionPrefix, harness: harness.name, attempt_index: attemptIndex, run_id: args.runId, sdk_error: sdkError };
-  await writeJson(predictionPath, prediction);
+  await writeJsonAtomic(predictionPath, prediction);
+  await appendJsonl(trajectoryFile, {
+    type: "submission",
+    timestamp: new Date().toISOString(),
+    prediction_path: predictionPath,
+    patch_path: path.join(attemptDir, "patch.diff"),
+    prefix: predictionPrefix,
+    patch_bytes: Buffer.byteLength(patch),
+    sdk_error: sdkError,
+  });
   await appendJsonl(trajectoryFile, { type: "attempt_end", timestamp: new Date().toISOString(), patch_bytes: Buffer.byteLength(patch), sdk_error: sdkError });
   return prediction;
 }

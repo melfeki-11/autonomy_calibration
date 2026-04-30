@@ -1,9 +1,10 @@
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { archiveExistingAttempt } from "../../shared/attempts.mjs";
 import { DEFAULT_CLAUDE_MODEL, claudeEnv } from "../../shared/config.mjs";
 import { promptForInstance, publicMetadata } from "../../shared/dataset.mjs";
 import { attemptWorkspace, cloneCheckout, diff } from "../../shared/git.mjs";
-import { appendJsonl, ensureDir, pathExists, writeJson, writeText } from "../../shared/io.mjs";
+import { appendJsonl, ensureDir, pathExists, writeJson, writeJsonAtomic, writeText } from "../../shared/io.mjs";
 
 export const harness = {
   name: "claude-code",
@@ -25,7 +26,16 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     return prediction;
   }
 
+  const archivedTo = await archiveExistingAttempt({ runDir, attemptDir, harnessName: harness.name, instanceId, attemptIndex });
   await ensureDir(attemptDir);
+  if (archivedTo) {
+    await appendJsonl(trajectoryFile, {
+      type: "attempt_archive_previous",
+      timestamp: new Date().toISOString(),
+      archived_to: archivedTo,
+      reason: args.resume ? "resume_incomplete_attempt" : "fresh_rerun",
+    });
+  }
   const prompt = promptForInstance(row);
   await writeText(path.join(attemptDir, "prompt.md"), prompt);
   await writeJson(path.join(attemptDir, "attempt.json"), {
@@ -45,7 +55,11 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
 
   await cloneCheckout({ row, workspaceDir, trajectoryFile });
 
-  const env = await claudeEnv({ CLAUDE_CONFIG_DIR: path.join(attemptDir, ".claude-config") });
+  const attemptHome = path.join(attemptDir, ".home");
+  const ansibleLocalTemp = path.join(attemptDir, ".ansible-tmp");
+  await ensureDir(attemptHome);
+  await ensureDir(ansibleLocalTemp);
+  const env = await claudeEnv({ CLAUDE_CONFIG_DIR: path.join(attemptDir, ".claude-config"), HOME: attemptHome, ANSIBLE_LOCAL_TEMP: ansibleLocalTemp });
   let sdkError = null;
   const attemptTimeoutMs = Number(args.attemptTimeoutMs || 0);
   const abortController = attemptTimeoutMs > 0 ? new AbortController() : null;
@@ -70,7 +84,7 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
               return { behavior: "deny", toolUseID: permission.toolUseID, message: `Denied access outside attempt workspace: ${blockedPath}` };
             }
           }
-          return { behavior: "allow", toolUseID: permission.toolUseID };
+          return { behavior: "allow", updatedInput: _input || {}, toolUseID: permission.toolUseID, decisionClassification: "user_temporary" };
         },
         systemPrompt: {
           type: "preset",
@@ -92,7 +106,16 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
   const patch = await diff(workspaceDir, trajectoryFile);
   await writeText(path.join(attemptDir, "patch.diff"), patch);
   const prediction = { instance_id: instanceId, patch, prefix: predictionPrefix, harness: harness.name, attempt_index: attemptIndex, run_id: args.runId, sdk_error: sdkError };
-  await writeJson(predictionPath, prediction);
+  await writeJsonAtomic(predictionPath, prediction);
+  await appendJsonl(trajectoryFile, {
+    type: "submission",
+    timestamp: new Date().toISOString(),
+    prediction_path: predictionPath,
+    patch_path: path.join(attemptDir, "patch.diff"),
+    prefix: predictionPrefix,
+    patch_bytes: Buffer.byteLength(patch),
+    sdk_error: sdkError,
+  });
   await appendJsonl(trajectoryFile, { type: "attempt_end", timestamp: new Date().toISOString(), patch_bytes: Buffer.byteLength(patch), sdk_error: sdkError });
   return prediction;
 }

@@ -26,20 +26,39 @@ def unbiased_estimate(n: int, c: int, k: int) -> float:
 
 def build_attempts(predictions: list[dict[str, Any]], official: dict[str, bool]) -> dict[str, list[dict[str, Any]]]:
     by_instance: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    prediction_count_by_instance: dict[str, int] = defaultdict(int)
+    for prediction in predictions:
+        prediction_count_by_instance[str(prediction["instance_id"])] += 1
     for idx, prediction in enumerate(predictions):
         prefix = str(prediction.get("prefix") or "")
+        instance_id = str(prediction["instance_id"])
         attempt_index = prediction.get("attempt_index")
         if attempt_index is None:
             attempt_index = attempt_from_prefix(prefix) or idx + 1
         resolved = official.get(prefix)
-        if resolved is None:
-            resolved = official.get(str(prediction.get("instance_id")))
-        by_instance[str(prediction["instance_id"])].append(
-            {"prefix": prefix, "attempt_index": int(attempt_index), "resolved": resolved, "eval_missing": resolved is None}
+        if resolved is None and prediction_count_by_instance[instance_id] == 1:
+            resolved = official.get(instance_id)
+        by_instance[instance_id].append(
+            {
+                "prefix": prefix,
+                "attempt_index": int(attempt_index),
+                "resolved": resolved,
+                "eval_missing": resolved is None,
+                "harness": prediction.get("harness"),
+                "generation_failed": bool(prediction.get("generation_failed")),
+                "sdk_error": prediction.get("sdk_error"),
+            }
         )
     for attempts in by_instance.values():
-        attempts.sort(key=lambda item: item["attempt_index"])
+        attempts.sort(key=lambda item: (item["attempt_index"], str(item.get("prefix") or "")))
     return by_instance
+
+
+def build_harness_attempts(predictions: list[dict[str, Any]], official: dict[str, bool]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    by_harness: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for prediction in predictions:
+        by_harness[str(prediction.get("harness") or "unknown")].append(prediction)
+    return {harness: build_attempts(items, official) for harness, items in sorted(by_harness.items())}
 
 
 def compute_passk(by_instance: dict[str, list[dict[str, Any]]], requested_k: list[int]) -> dict[str, Any]:
@@ -60,4 +79,5 @@ def compute_passk(by_instance: dict[str, list[dict[str, Any]]], requested_k: lis
                 unbiased_sum += unbiased_estimate(n, c, k)
         metrics["pass_at_k"][str(k)] = solved / total if total else 0.0
         metrics["unbiased_pass_at_k"][str(k)] = unbiased_sum / unbiased_count if unbiased_count else None
+    metrics["missing_eval_attempts"] = sum(1 for attempts in by_instance.values() for item in attempts if item["eval_missing"])
     return metrics
