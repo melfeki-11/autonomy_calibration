@@ -5,7 +5,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.passk import build_attempts, build_harness_attempts, compute_passk, unbiased_estimate
-from scripts.summarize_passk import collect_attempt_outputs, required_test_passed, scheduled_tests_from_log, statuses_from_logs, statuses_from_output
+from scripts.summarize_passk import (
+    collect_attempt_outputs,
+    filter_ambiguous_instance_results,
+    required_test_passed,
+    scheduled_tests_from_log,
+    statuses_from_logs,
+    statuses_from_output,
+)
 
 
 class PassKTest(unittest.TestCase):
@@ -28,7 +35,6 @@ class PassKTest(unittest.TestCase):
         self.assertEqual(metrics["pass_at_k"]["2"], 0.0)
         self.assertEqual(metrics["pass_at_k"]["3"], 1.0)
         self.assertAlmostEqual(metrics["unbiased_pass_at_k"]["2"], 2 / 3)
-
 
     def test_one_success_in_first_k(self):
         predictions = [{"instance_id": "a", "prefix": f"a-{i}", "attempt_index": i} for i in range(1, 4)]
@@ -87,6 +93,17 @@ class PassKTest(unittest.TestCase):
         groups = build_harness_attempts(predictions, {"claude-a-1": False, "codex-a-1": True})
         self.assertEqual(compute_passk(groups["claude-code"], [1])["pass_at_k"]["1"], 0.0)
         self.assertEqual(compute_passk(groups["codex"], [1])["pass_at_k"]["1"], 1.0)
+
+    def test_instance_keyed_fallback_is_global_not_per_harness(self):
+        predictions = [
+            {"harness": "claude-code", "instance_id": "a", "prefix": "claude-a-1", "attempt_index": 1},
+            {"harness": "codex", "instance_id": "a", "prefix": "codex-a-1", "attempt_index": 1},
+            {"harness": "codex", "instance_id": "b", "prefix": "codex-b-1", "attempt_index": 1},
+        ]
+        filtered = filter_ambiguous_instance_results(predictions, {"a": True, "b": False, "codex-a-1": False})
+        self.assertNotIn("a", filtered)
+        self.assertEqual(filtered["b"], False)
+        self.assertEqual(filtered["codex-a-1"], False)
 
     def test_output_status_aliases_parameterized_tests(self):
         statuses = statuses_from_output(

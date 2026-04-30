@@ -266,6 +266,16 @@ def predictions_with_failures(run_dir: Path, predictions: list[dict[str, Any]]) 
     return out
 
 
+def filter_ambiguous_instance_results(predictions: list[dict[str, Any]], official: dict[str, bool]) -> dict[str, bool]:
+    counts: dict[str, int] = {}
+    for prediction in predictions:
+        instance_id = str(prediction.get("instance_id") or "")
+        if instance_id:
+            counts[instance_id] = counts.get(instance_id, 0) + 1
+    ambiguous_instances = {instance_id for instance_id, count in counts.items() if count > 1}
+    return {key: value for key, value in official.items() if key not in ambiguous_instances}
+
+
 def render_metric_lines(metrics: dict[str, Any]) -> list[str]:
     lines: list[str] = [f"Total instances: {metrics['total_instances']}"]
     missing = int(metrics.get("missing_eval_attempts") or 0)
@@ -298,7 +308,9 @@ def main() -> None:
     if not predictions_path.exists():
         raise SystemExit(f"Missing predictions: {predictions_path}")
     predictions = predictions_with_failures(run_dir, json.loads(predictions_path.read_text(encoding="utf-8")))
-    official = collect_attempt_outputs(run_dir, args.samples, predictions_path) or collect_official_results(run_dir)
+    official = collect_attempt_outputs(run_dir, args.samples, predictions_path)
+    if not official:
+        official = filter_ambiguous_instance_results(predictions, collect_official_results(run_dir))
     harnesses = sorted({str(prediction.get("harness") or "unknown") for prediction in predictions})
     if len(harnesses) <= 1:
         by_instance = build_attempts(predictions, official)
