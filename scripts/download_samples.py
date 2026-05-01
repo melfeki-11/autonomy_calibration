@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +37,15 @@ def normalized_row(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def choose_rows(rows: list[dict[str, Any]], limit: int, repo: str | None) -> list[dict[str, Any]]:
+def row_score(row: dict[str, Any]) -> tuple[int, int, int, str]:
+    selected_tests = row.get("selected_test_files_to_run") or ""
+    selected_tests_count = len(selected_tests.splitlines()) or len(selected_tests.split(",")) if isinstance(selected_tests, str) else scalar_len(selected_tests)
+    patch_size = scalar_len(row.get("patch")) + scalar_len(row.get("test_patch"))
+    problem_size = scalar_len(row.get("problem_statement"))
+    return (selected_tests_count, patch_size, problem_size, str(row.get("instance_id")))
+
+
+def choose_rows(rows: list[dict[str, Any]], limit: int, repo: str | None, single_repo: bool) -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         row_repo = str(row.get("repo") or "")
@@ -46,6 +54,12 @@ def choose_rows(rows: list[dict[str, Any]], limit: int, repo: str | None) -> lis
         groups[row_repo].append(row)
     if not groups:
         raise SystemExit(f"No rows found for repo={repo!r}")
+    available_rows = [row for repo_rows in groups.values() for row in repo_rows]
+    if len(available_rows) < limit:
+        raise SystemExit(f"Only {len(available_rows)} rows available for repo={repo!r}; need {limit}.")
+
+    if not single_repo:
+        return sorted(available_rows, key=row_score)[:limit]
 
     def repo_score(item: tuple[str, list[dict[str, Any]]]) -> tuple[int, int, str]:
         repo_name, repo_rows = item
@@ -55,14 +69,6 @@ def choose_rows(rows: list[dict[str, Any]], limit: int, repo: str | None) -> lis
     candidate_repo, candidate_rows = max(groups.items(), key=repo_score)
     if len(candidate_rows) < limit:
         raise SystemExit(f"Selected repo {candidate_repo} only has {len(candidate_rows)} rows; need {limit}.")
-
-    def row_score(row: dict[str, Any]) -> tuple[int, int, int, str]:
-        selected_tests = row.get("selected_test_files_to_run") or ""
-        selected_tests_count = len(selected_tests.splitlines()) or len(selected_tests.split(",")) if isinstance(selected_tests, str) else scalar_len(selected_tests)
-        patch_size = scalar_len(row.get("patch")) + scalar_len(row.get("test_patch"))
-        problem_size = scalar_len(row.get("problem_statement"))
-        return (selected_tests_count, patch_size, problem_size, str(row.get("instance_id")))
-
     return sorted(candidate_rows, key=row_score)[:limit]
 
 
@@ -86,13 +92,15 @@ def main() -> None:
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--split", default=DEFAULT_SPLIT)
     parser.add_argument("--repo", default=None, help="Optional exact repo name to force.")
+    parser.add_argument("--single-repo", action="store_true", help="Select the low-friction sample from one repository instead of across all matching rows.")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--out-dir", type=Path, default=ROOT / "data")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     dataset = load_dataset(args.dataset, split=args.split)
-    selected = choose_rows([dict(row) for row in dataset], args.limit, args.repo)
+    all_rows = [dict(row) for row in dataset]
+    selected = choose_rows(all_rows, args.limit, args.repo, args.single_repo)
 
     jsonl_path = args.out_dir / "swebench_pro_samples.jsonl"
     csv_path = args.out_dir / "swebench_pro_samples.csv"
@@ -102,9 +110,11 @@ def main() -> None:
     manifest = {
         "dataset": args.dataset,
         "split": args.split,
-        "selection": "deterministic single-repo low-friction sample",
+        "selection": "deterministic single-repo low-friction sample" if args.single_repo else "deterministic low-friction sample across matching rows",
         "limit": args.limit,
-        "repo": selected[0].get("repo"),
+        "available_rows": len([row for row in all_rows if not args.repo or row.get("repo") == args.repo]),
+        "repo": args.repo,
+        "repos": dict(sorted(Counter(str(row.get("repo") or "") for row in selected).items())),
         "jsonl_path": str(jsonl_path),
         "csv_path": str(csv_path),
         "instances": [
@@ -113,7 +123,8 @@ def main() -> None:
         ],
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"Wrote {len(selected)} rows from {selected[0].get('repo')}:")
+    repos = ", ".join(f"{repo}={count}" for repo, count in manifest["repos"].items())
+    print(f"Wrote {len(selected)} rows ({repos}):")
     print(f"  {jsonl_path}")
     print(f"  {csv_path}")
     print(f"  {manifest_path}")

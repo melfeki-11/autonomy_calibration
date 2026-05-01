@@ -73,14 +73,24 @@ function selectedHarnesses(harness) {
   return [harness];
 }
 
+async function countJsonlRows(filePath) {
+  const text = await fs.readFile(filePath, "utf8");
+  return text.split(/\r?\n/).filter(Boolean).length;
+}
+
 const args = parseArgs(process.argv.slice(2));
 const harnesses = selectedHarnesses(args.harness);
 const runDir = path.join(evalsDir, args.runId);
+const availableRows = await countJsonlRows(args.input);
+if (args.limit > availableRows) {
+  throw new Error(`Requested --limit ${args.limit}, but ${args.input} contains only ${availableRows} samples. Run npm run download-samples -- --limit ${args.limit} first.`);
+}
 
 console.log("SWE-bench Pro pass@k run");
 console.log(`  run_id: ${args.runId}`);
 console.log(`  data: ${args.input}`);
-console.log(`  data_size: ${args.limit}`);
+console.log(`  available_data_size: ${availableRows}`);
+console.log(`  selected_data_size: ${args.limit}`);
 console.log(`  k: ${args.k}`);
 console.log(`  harnesses: ${harnesses.join(", ")}`);
 if (harnesses.includes("claude-code")) console.log(`  claude-code model: ${args.claudeModel}`);

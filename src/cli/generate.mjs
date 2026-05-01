@@ -93,6 +93,9 @@ async function writeFailurePrediction({ job, args, runDir, error }) {
 const args = parseArgs(process.argv.slice(2));
 const selectedHarnesses = resolveHarnesses(args.harness);
 const allSamples = await loadSamples(args.input);
+if (args.limit !== undefined && args.limit > allSamples.length) {
+  throw new Error(`Requested --limit ${args.limit}, but ${args.input} contains only ${allSamples.length} samples. Run npm run download-samples -- --limit ${args.limit} first.`);
+}
 const samples = args.limit ? allSamples.slice(0, args.limit) : allSamples;
 const runDir = path.join(evalsDir, args.runId);
 await ensureDir(runDir);

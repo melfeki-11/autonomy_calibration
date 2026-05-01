@@ -17,7 +17,7 @@ After setup, this single command runs generation, official evaluation, and pass@
 npm run passk -- --limit 1 --k 3 --harness all
 ```
 
-It prints the selected data size, pass@k value, harnesses, models, and final pass@k numbers. Defaults are:
+It prints the available local data size, selected data size, pass@k value, harnesses, models, and final pass@k numbers. Defaults are:
 
 - `--limit 1`
 - `--k 3`
@@ -36,6 +36,15 @@ npm run passk -- --limit 10 --k 5 --harness all --run-id both-k5-n10
 npm run passk -- --limit 3 --k 3 --harness all --claude-model claude-sonnet-4-6 --codex-model gpt-5.5 --codex-reasoning-effort low
 ```
 
+To run the full public SWE-bench Pro test split, first download all 731 public rows, then launch pass@3:
+
+```sh
+npm run download-samples -- --limit 731
+npm run passk -- --limit 731 --k 3 --harness all
+```
+
+The runner refuses to start if `--limit` is larger than the number of rows in the local JSONL, so a full-set command cannot silently run only the smaller default sample.
+
 `npm run passk` writes artifacts under `evals/<run_id>/`, then prints `summary.md`. The generated `metrics.json` contains the machine-readable observed pass@k and unbiased pass@k values.
 
 ## Setup
@@ -49,7 +58,9 @@ npm run download-samples
 
 `setup-vendor` clones `https://github.com/scaleapi/SWE-bench_Pro-os.git` into `vendor/SWE-bench_Pro-os`. Override with `SWEBENCH_PRO_REPO` if you need a fork.
 
-`download-samples` creates:
+`download-samples` defaults to `--limit 5` across matching rows. Use `npm run download-samples -- --limit 731` for the public SWE-bench Pro test split, or add `--repo <owner/name>` to focus on a repository. Add `--single-repo` only when you intentionally want a low-friction sample from one repository.
+
+It creates:
 
 - `data/swebench_pro_samples.jsonl` for generation
 - `data/swebench_pro_samples.csv` for the official evaluator
