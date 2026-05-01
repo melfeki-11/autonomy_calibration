@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { DEFAULT_CODEX_REASONING_EFFORT, dataDir, defaultGenerateConcurrency, evalsDir } from "../shared/config.mjs";
+import { DEFAULT_ASK_HUMAN_MODEL, DEFAULT_ASK_HUMAN_SEED, DEFAULT_CODEX_REASONING_EFFORT, dataDir, defaultGenerateConcurrency, evalsDir } from "../shared/config.mjs";
 import { loadSamples } from "../shared/dataset.mjs";
 import { appendJsonl, ensureDir, writeJsonAtomic, writeText } from "../shared/io.mjs";
 import { collectRunPredictions, comparePredictions } from "../shared/predictions.mjs";
@@ -23,6 +23,15 @@ function parseArgs(argv) {
     concurrency: undefined,
     attemptTimeoutMs: Number(process.env.HARNESS_ATTEMPT_TIMEOUT_MS || 0),
     resume: false,
+    humanKb: process.env.HARNESS_HUMAN_KB || undefined,
+    askHumanCache: process.env.HARNESS_ASK_HUMAN_CACHE || undefined,
+    askHumanReplay: false,
+    askHumanModel: process.env.ASK_HUMAN_MODEL || DEFAULT_ASK_HUMAN_MODEL,
+    askHumanSeed: Number(process.env.ASK_HUMAN_SEED || DEFAULT_ASK_HUMAN_SEED),
+    humanSimulatorMode: process.env.HARNESS_HUMAN_SIMULATOR_MODE || undefined,
+    approvalPolicyRouter: process.env.HARNESS_APPROVAL_POLICY_ROUTER || "safe-looking",
+    codexTransport: process.env.CODEX_TRANSPORT || undefined,
+    codexApprovalPolicy: process.env.CODEX_APPROVAL_POLICY || undefined,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -40,11 +49,26 @@ function parseArgs(argv) {
     else if (arg === "--concurrency") args.concurrency = Number(argv[++i]);
     else if (arg === "--attempt-timeout-ms") args.attemptTimeoutMs = Number(argv[++i]);
     else if (arg === "--resume") args.resume = true;
+    else if (arg === "--human-kb") args.humanKb = argv[++i];
+    else if (arg === "--human-cache") args.askHumanCache = argv[++i];
+    else if (arg === "--ask-human-cache") args.askHumanCache = argv[++i];
+    else if (arg === "--ask-human-replay") args.askHumanReplay = true;
+    else if (arg === "--ask-human-model") args.askHumanModel = argv[++i];
+    else if (arg === "--ask-human-seed") args.askHumanSeed = Number(argv[++i]);
+    else if (arg === "--human-simulator-mode") args.humanSimulatorMode = argv[++i];
+    else if (arg === "--enable-human-input") args.humanSimulatorMode = argv[++i] === "false" ? "off" : "live";
+    else if (arg === "--approval-policy-router") args.approvalPolicyRouter = argv[++i];
+    else if (arg === "--codex-transport") args.codexTransport = argv[++i];
+    else if (arg === "--codex-approval-policy") args.codexApprovalPolicy = argv[++i];
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!Number.isInteger(args.k) || args.k < 1) throw new Error("--k must be a positive integer");
   if (args.concurrency !== undefined && (!Number.isInteger(args.concurrency) || args.concurrency < 1)) throw new Error("--concurrency must be a positive integer");
   if (!Number.isInteger(args.attemptTimeoutMs) || args.attemptTimeoutMs < 0) throw new Error("--attempt-timeout-ms must be a non-negative integer");
+  if (!Number.isInteger(args.askHumanSeed)) throw new Error("--ask-human-seed must be an integer");
+  if (args.humanSimulatorMode !== undefined && !["off", "live", "replay"].includes(args.humanSimulatorMode)) throw new Error("--human-simulator-mode must be off, live, or replay");
+  if (args.codexTransport !== undefined && !["exec", "app-server"].includes(args.codexTransport)) throw new Error("--codex-transport must be exec or app-server");
+  if (!["safe-looking", "deny", "fail"].includes(args.approvalPolicyRouter)) throw new Error("--approval-policy-router must be safe-looking, deny, or fail");
   return args;
 }
 
@@ -98,6 +122,15 @@ if (args.limit !== undefined && args.limit > allSamples.length) {
 }
 const samples = args.limit ? allSamples.slice(0, args.limit) : allSamples;
 const runDir = path.join(evalsDir, args.runId);
+if (args.humanSimulatorMode === "off") {
+  args.humanKb = undefined;
+  args.askHumanReplay = false;
+} else if (args.humanSimulatorMode === "replay") {
+  args.askHumanReplay = true;
+}
+if (!args.askHumanCache && args.humanKb) args.askHumanCache = path.join(runDir, "ask-human-cache.json");
+if (!args.codexTransport) args.codexTransport = args.humanKb ? "app-server" : "exec";
+if (!args.codexApprovalPolicy) args.codexApprovalPolicy = args.humanKb ? "on-request" : "never";
 await ensureDir(runDir);
 
 const jobs = [];
@@ -132,6 +165,14 @@ function queueProgressWrite() {
       concurrency,
       attempt_timeout_ms: args.attemptTimeoutMs,
       model_reasoning_effort: args.modelReasoningEffort,
+      human_kb: args.humanKb,
+      ask_human_cache: args.askHumanCache,
+      ask_human_replay: args.askHumanReplay,
+      ask_human_model: args.askHumanModel,
+      human_simulator_mode: args.humanSimulatorMode,
+      approval_policy_router: args.approvalPolicyRouter,
+      codex_transport: args.codexTransport,
+      codex_approval_policy: args.codexApprovalPolicy,
       failures,
     });
   });
@@ -169,6 +210,14 @@ await writeJsonAtomic(path.join(runDir, "generation-progress.json"), {
   concurrency,
   attempt_timeout_ms: args.attemptTimeoutMs,
   model_reasoning_effort: args.modelReasoningEffort,
+  human_kb: args.humanKb,
+  ask_human_cache: args.askHumanCache,
+  ask_human_replay: args.askHumanReplay,
+  ask_human_model: args.askHumanModel,
+  human_simulator_mode: args.humanSimulatorMode,
+  approval_policy_router: args.approvalPolicyRouter,
+  codex_transport: args.codexTransport,
+  codex_approval_policy: args.codexApprovalPolicy,
   failures,
 });
 await writeJsonAtomic(path.join(runDir, "attempts-index.json"), {
@@ -178,6 +227,14 @@ await writeJsonAtomic(path.join(runDir, "attempts-index.json"), {
   concurrency,
   attempt_timeout_ms: args.attemptTimeoutMs,
   model_reasoning_effort: args.modelReasoningEffort,
+  human_kb: args.humanKb,
+  ask_human_cache: args.askHumanCache,
+  ask_human_replay: args.askHumanReplay,
+  ask_human_model: args.askHumanModel,
+  human_simulator_mode: args.humanSimulatorMode,
+  approval_policy_router: args.approvalPolicyRouter,
+  codex_transport: args.codexTransport,
+  codex_approval_policy: args.codexApprovalPolicy,
   failed_jobs: failures,
   predictions: predictions.map((prediction) => ({
     harness: prediction.harness,

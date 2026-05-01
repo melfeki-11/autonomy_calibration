@@ -1,6 +1,6 @@
 import { readJsonl } from "./io.mjs";
 
-const ORACLE_FIELDS = new Set(["patch", "test_patch", "fail_to_pass", "pass_to_pass"]);
+const ORACLE_FIELDS = new Set(["patch", "test_patch", "fail_to_pass", "pass_to_pass", "clone_repo"]);
 
 export async function loadSamples(file) {
   return readJsonl(file);

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import litellm
 
 DEFAULT_BASE_URL = "https://litellm-proxy.ml-serving-internal.scale.com"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "bedrock/qwen.qwen3-32b-v1:0"
 AWS_SECRET_ID = "team/GENAIML/secret-store-key"
 AWS_REGION = "us-west-2"
 

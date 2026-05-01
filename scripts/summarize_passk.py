@@ -14,8 +14,10 @@ from typing import Any
 
 try:
     from passk import build_attempts, build_harness_attempts, compute_passk
+    from process_metrics import compute_process_metrics, render_process_summary
 except ModuleNotFoundError:
     from .passk import build_attempts, build_harness_attempts, compute_passk
+    from .process_metrics import compute_process_metrics, render_process_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -359,9 +361,13 @@ def main() -> None:
                 for harness, by_instance in build_harness_attempts(predictions, official).items()
             },
         }
+    process_metrics = compute_process_metrics(run_dir, pass_by_prefix=official)
+    metrics["process_metrics"] = process_metrics
 
     out_json = run_dir / "metrics.json"
     out_md = run_dir / "summary.md"
+    (run_dir / "process_metrics.json").write_text(json.dumps(process_metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (run_dir / "process_summary.md").write_text(render_process_summary(process_metrics), encoding="utf-8")
     out_json.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     lines = [f"# {args.run_id}", ""]
     if "harnesses" in metrics:
@@ -372,6 +378,25 @@ def main() -> None:
     else:
         lines.extend(render_metric_lines(metrics))
         lines.append("")
+    lines.append("## Process Metrics")
+    lines.append(f"- ASK-F1: {process_metrics['ASK_F1']:.4f}")
+    lines.append(f"- question precision: {process_metrics['question_precision']:.4f}")
+    lines.append(f"- blocker recall: {process_metrics['blocker_recall']:.4f}")
+    lines.append(f"- clarification requests/task: {process_metrics['clarification_requests_per_task']:.4f}")
+    lines.append(f"- approval/permission requests/task: {process_metrics['approval_permission_requests_per_task']:.4f}")
+    human_burden = process_metrics["human_burden_per_successful_task"]
+    lines.append(f"- human burden/success: {'missing' if human_burden is None else f'{human_burden:.4f}'}")
+    lines.append(f"- approval fallback/registry/unknown: {process_metrics['approval_fallback_count']}/{process_metrics['approval_registry_grounded_count']}/{process_metrics['approval_unknown_count']}")
+    lines.append(f"- grounded/ungrounded pass: {process_metrics['grounded_pass_count']}/{process_metrics['ungrounded_pass_count']}")
+    lines.append(f"- silent blocker count: {process_metrics['silent_blocker_count']}")
+    completeness = ", ".join(f"{key}={value}" for key, value in process_metrics["trace_completeness"].items())
+    lines.append(f"- trace completeness: {completeness}")
+    if process_metrics["top_deterministic_failure_signals"]:
+        signals = "; ".join(f"{item['signal']}={item['count']}" for item in process_metrics["top_deterministic_failure_signals"])
+        lines.append(f"- top deterministic failure signals: {signals}")
+    else:
+        lines.append("- top deterministic failure signals: none")
+    lines.append("")
     lines.extend(render_final_results_lines(metrics))
     out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(out_json)

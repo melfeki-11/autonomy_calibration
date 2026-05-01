@@ -8,6 +8,8 @@ import { redactString } from "./redact.mjs";
 
 export function repoUrl(repo) {
   if (/^https?:\/\//.test(repo)) return repo;
+  if (/^file:\/\//.test(repo)) return repo;
+  if (path.isAbsolute(repo) || repo.startsWith(".")) return path.resolve(rootDir, repo);
   return `https://github.com/${repo}.git`;
 }
 
@@ -75,7 +77,8 @@ function cacheName(repo) {
 }
 
 async function ensureRepoCache(row, trajectoryFile) {
-  const cacheDir = path.join(rootDir, ".cache", "repos", `${cacheName(row.repo)}.git`);
+  const cloneSource = row.clone_repo || row.repo;
+  const cacheDir = path.join(rootDir, ".cache", "repos", `${cacheName(cloneSource)}.git`);
   const lockDir = `${cacheDir}.lock`;
   await fs.mkdir(path.dirname(cacheDir), { recursive: true });
   while (true) {
@@ -90,9 +93,9 @@ async function ensureRepoCache(row, trajectoryFile) {
     if (await pathExists(path.join(cacheDir, "HEAD"))) {
       await runCommand("git", ["fetch", "--prune", "origin"], { cwd: cacheDir, trajectoryFile, allowFailure: true });
     } else {
-      const tmpDir = localTmpDir(`${cacheName(row.repo)}-mirror`);
+      const tmpDir = localTmpDir(`${cacheName(cloneSource)}-mirror`);
       try {
-        await runCommand("git", ["clone", "--mirror", repoUrl(row.repo), tmpDir], { trajectoryFile });
+        await runCommand("git", ["clone", "--mirror", repoUrl(cloneSource), tmpDir], { trajectoryFile });
         await moveDir(tmpDir, cacheDir);
       } catch (error) {
         await fs.rm(tmpDir, { recursive: true, force: true });
@@ -106,6 +109,7 @@ async function ensureRepoCache(row, trajectoryFile) {
 }
 
 export async function cloneCheckout({ row, workspaceDir, trajectoryFile }) {
+  const cloneSource = row.clone_repo || row.repo;
   const gitDir = path.join(workspaceDir, ".git");
   await fs.mkdir(path.dirname(workspaceDir), { recursive: true });
   if (!(await pathExists(gitDir))) {
@@ -114,19 +118,19 @@ export async function cloneCheckout({ row, workspaceDir, trajectoryFile }) {
       await fs.rename(workspaceDir, staleDir);
       await appendJsonl(trajectoryFile, { type: "workspace_quarantine", timestamp: new Date().toISOString(), from: workspaceDir, to: staleDir });
     }
-    const tmpDir = localTmpDir(`${cacheName(row.repo)}-checkout`);
+    const tmpDir = localTmpDir(`${cacheName(cloneSource)}-checkout`);
     try {
       let clonedWithCache = false;
       try {
         const cacheDir = await ensureRepoCache(row, trajectoryFile);
-        await runCommand("git", ["clone", "--no-tags", "--reference-if-able", cacheDir, repoUrl(row.repo), tmpDir], { trajectoryFile });
+        await runCommand("git", ["clone", "--no-tags", "--reference-if-able", cacheDir, repoUrl(cloneSource), tmpDir], { trajectoryFile });
         clonedWithCache = true;
       } catch (error) {
         await appendJsonl(trajectoryFile, { type: "repo_cache_fallback", timestamp: new Date().toISOString(), error: String(error?.stack || error) });
         await fs.rm(tmpDir, { recursive: true, force: true });
       }
       if (!clonedWithCache) {
-        await runCommand("git", ["clone", "--no-tags", "--depth", "1", repoUrl(row.repo), tmpDir], { trajectoryFile });
+        await runCommand("git", ["clone", "--no-tags", "--depth", "1", repoUrl(cloneSource), tmpDir], { trajectoryFile });
       }
       await placeWorkspace(tmpDir, workspaceDir, trajectoryFile);
     } catch (error) {

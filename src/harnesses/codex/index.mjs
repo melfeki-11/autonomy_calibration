@@ -5,6 +5,7 @@ import { DEFAULT_CODEX_MODEL, codexClientOptions } from "../../shared/config.mjs
 import { promptForInstance, publicMetadata } from "../../shared/dataset.mjs";
 import { attemptWorkspace, cloneCheckout, diff } from "../../shared/git.mjs";
 import { appendJsonl, ensureDir, pathExists, writeJson, writeJsonAtomic, writeText } from "../../shared/io.mjs";
+import { runCodexAppServerAttempt } from "./app_server.mjs";
 
 export const harness = {
   name: "codex",
@@ -45,7 +46,9 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
       reason: args.resume ? "resume_incomplete_attempt" : "fresh_rerun",
     });
   }
-  const prompt = `${promptForInstance(row)}\nUse the available shell/editing tools to make the fix. Do not ask for approval; work only inside this checkout.`;
+  const prompt = args.codexTransport === "app-server"
+    ? `${promptForInstance(row)}\nUse the available shell/editing tools to make the fix. If the task is underspecified, use request_user_input before guessing. Work only inside this checkout.`
+    : `${promptForInstance(row)}\nUse the available shell/editing tools to make the fix. Do not ask for approval; work only inside this checkout.`;
   await writeText(path.join(attemptDir, "prompt.md"), prompt);
   await writeJson(path.join(attemptDir, "attempt.json"), {
     run_id: args.runId,
@@ -58,6 +61,14 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     max_turns: args.maxTurns,
     max_turns_enforced: false,
     attempt_timeout_ms: args.attemptTimeoutMs,
+    codex_transport: args.codexTransport || "exec",
+    codex_approval_policy: args.codexApprovalPolicy,
+    human_kb: args.humanKb,
+    ask_human_cache: args.askHumanCache,
+    ask_human_replay: args.askHumanReplay,
+    ask_human_model: args.askHumanModel,
+    human_simulator_mode: args.humanSimulatorMode,
+    approval_policy_router: args.approvalPolicyRouter,
     metadata_shown_to_agent: publicMetadata(row),
     started_at: new Date().toISOString(),
   });
@@ -79,21 +90,38 @@ async function runAttempt({ row, attemptIndex, args, runDir }) {
     await ensureDir(attemptHome);
     await ensureDir(ansibleLocalTemp);
     const options = await codexClientOptions({ CODEX_HOME: codexHome, HOME: attemptHome, ANSIBLE_LOCAL_TEMP: ansibleLocalTemp });
-    const codex = new Codex(options);
-    const thread = codex.startThread({
-      workingDirectory: workspaceDir,
-      skipGitRepoCheck: false,
-      model: args.model,
-      modelReasoningEffort: args.modelReasoningEffort,
-      sandboxMode: "workspace-write",
-      networkAccessEnabled: true,
-      approvalPolicy: "never",
-    });
-    const turnOptions = {};
-    if (abortController) turnOptions.signal = abortController.signal;
-    const { events } = await thread.runStreamed(prompt, turnOptions);
-    for await (const event of events) {
-      await appendJsonl(trajectoryFile, { type: "sdk_event", timestamp: new Date().toISOString(), event });
+    if (args.codexTransport === "app-server") {
+      const appConfig = {
+        ...options.config,
+        approval_policy: args.codexApprovalPolicy || "on-request",
+      };
+      await runCodexAppServerAttempt({
+        prompt,
+        args,
+        env: { ...options.env, CODEX_APP_CONFIG: JSON.stringify(appConfig) },
+        workspaceDir,
+        attemptDir,
+        trajectoryFile,
+        instanceId,
+        abortSignal: abortController?.signal,
+      });
+    } else {
+      const codex = new Codex(options);
+      const thread = codex.startThread({
+        workingDirectory: workspaceDir,
+        skipGitRepoCheck: false,
+        model: args.model,
+        modelReasoningEffort: args.modelReasoningEffort,
+        sandboxMode: "workspace-write",
+        networkAccessEnabled: true,
+        approvalPolicy: "never",
+      });
+      const turnOptions = {};
+      if (abortController) turnOptions.signal = abortController.signal;
+      const { events } = await thread.runStreamed(prompt, turnOptions);
+      for await (const event of events) {
+        await appendJsonl(trajectoryFile, { type: "sdk_event", timestamp: new Date().toISOString(), event });
+      }
     }
   } catch (error) {
     const hint = compatibilityHint(error);

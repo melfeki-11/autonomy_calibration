@@ -14,6 +14,8 @@ export const DEFAULT_BASE_URL = "https://litellm-proxy.ml-serving-internal.scale
 export const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
 export const DEFAULT_CODEX_MODEL = "gpt-5.5";
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
+export const DEFAULT_ASK_HUMAN_MODEL = "bedrock/qwen.qwen3-32b-v1:0";
+export const DEFAULT_ASK_HUMAN_SEED = 20260501;
 export const AWS_SECRET_ID = "team/GENAIML/secret-store-key";
 export const AWS_REGION = "us-west-2";
 export const DEFAULT_AWS_PROFILE = "production-developer";
@@ -126,6 +128,7 @@ export async function codexClientOptions(extraEnv = {}) {
         [CODEX_LITELLM_PROVIDER]: {
           name: "LiteLLM",
           base_url: responsesBaseUrl,
+          env_key: "CODEX_API_KEY",
           wire_api: "responses",
           requires_openai_auth: true,
         },

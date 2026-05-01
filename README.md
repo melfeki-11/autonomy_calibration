@@ -91,10 +91,11 @@ The Node credential loader defaults AWS secret lookup to `AWS_PROFILE=production
 - `src/cli/generate.mjs`: normalized prediction generation CLI.
 - `src/harnesses/claude-code/`: Claude Code SDK adapter.
 - `src/harnesses/codex/`: Codex SDK adapter.
-- `src/shared/`: credentials, dataset prompts, git/workspace helpers, redaction, bounded concurrency, and artifact utilities.
+- `src/shared/`: credentials, dataset prompts, git/workspace helpers, human-input routing, trace normalization, redaction, bounded concurrency, and artifact utilities.
 - `scripts/run_passk.mjs`: one-command generate/evaluate/summarize runner.
 - `scripts/evaluate_official.py`: wrapper around the official SWE-bench Pro evaluator.
 - `scripts/summarize_passk.py` and `scripts/passk.py`: per-attempt result parsing and pass@k aggregation.
+- `scripts/process_metrics.py`: deterministic clarification/approval/process metrics from saved traces.
 - `scripts/download_samples.py`: deterministic SWE-bench Pro sample downloader.
 - `scripts/setup_vendor.py`: official evaluator checkout setup.
 - `scripts/probe_*.mjs` and `test_litellm.py`: LiteLLM, Claude Code, and Codex connectivity probes.
@@ -117,9 +118,25 @@ requires_openai_auth = true
 
 This keeps Codex on the LiteLLM Responses/Codex protocol path and avoids falling back to local Codex login.
 
+Clarification-aware behavior is opt-in with `--human-kb`. Claude Code gets an always-loaded MCP `human_input.ask_human` tool plus SDK `canUseTool` and `onElicitation` routing. Codex uses the experimental app-server transport by default when a KB is configured so `request_user_input`, elicitation, and approval/permission requests can be captured. Plain Codex exec mode remains the default for existing non-interactive pass@k runs.
+
+`ask_human` uses `bedrock/qwen.qwen3-32b-v1:0` through the same LiteLLM credential path by default, but only as a strict registry selector. It returns an exact stored registry resolution or exactly `I don't know`. Approval/permission decisions are routed separately through explicit approval registry entries or a deterministic conservative fallback.
+
+Useful clarification flags:
+
+```sh
+node src/cli/generate.mjs --input data/clarification_smoke.jsonl --harness codex --limit 1 \
+  --human-kb data/clarification_smoke_kb.json \
+  --ask-human-cache evals/my-run/ask-human-cache.json \
+  --ask-human-replay \
+  --codex-transport app-server \
+  --codex-approval-policy on-request
+```
+
 Probe the endpoints directly with:
 
 ```sh
+LITELLM_MODEL=bedrock/qwen.qwen3-32b-v1:0 npm run probe:litellm
 npm run probe:litellm
 npm run probe:claude
 npm run probe:codex
@@ -139,6 +156,8 @@ evals/<run_id>/trajectories/<harness>/<instance_id>/attempt-<i>/
 ```
 
 `trajectory.jsonl` is the manual inspection record. It captures attempt metadata, checkout commands, SDK-visible messages/events, tool calls/results as exposed by the SDK, SDK errors, final submission metadata, and patch/prediction paths. Private hidden model chain-of-thought is not available unless an SDK emits reasoning summaries, but all SDK-visible reasoning summaries, decisions, commands, submissions, and errors are preserved verbatim in JSONL.
+
+Each trajectory event also includes normalized fields such as `event_index`, `event_type`, `native_event_type`, `native_payload`, `normalized_request_type`, `question`, `answer`, `ask_human_status`, matched blocker/source ids, approval decision/grounding, files/commands/tests, patch path, final status, and audit metadata where available. Raw native payloads remain present for replay and future taxonomy analysis.
 
 If a stale attempt directory already exists, a fresh non-resume run archives it under `evals/<run_id>/stale-attempts/` before writing a new trajectory.
 
@@ -186,6 +205,14 @@ python3 scripts/evaluate_official.py --run-id both-pass3-smoke
 python3 scripts/summarize_passk.py --run-id both-pass3-smoke --k 3
 ```
 
+Process metrics can also be computed directly from saved traces:
+
+```sh
+npm run process-metrics -- --run-id clarification-smoke --human-kb data/clarification_smoke_kb.json
+```
+
+The pass@k summarizer writes `process_metrics.json` and `process_summary.md` alongside the existing `metrics.json` and `summary.md`.
+
 Evaluation removes exact per-prefix evaluator artifacts and forces the official evaluator's `--redo` flag by default, so reusing a `RUN_ID` cannot silently reuse stale per-attempt outputs. Use `--reuse-existing` or `--reuse-existing-eval` only when you intentionally want cached evaluator artifacts.
 
 The compatibility smoke scripts are aliases around the same flow:
@@ -196,10 +223,46 @@ npm run smoke:pass3:evaluate
 npm run smoke:pass3:summarize
 ```
 
+Clarification substrate smoke paths:
+
+```sh
+npm run smoke:clarification:prepare
+npm run smoke:clarification:generate
+npm run smoke:clarification:verify
+```
+
+The generate/verify path is live and opt-in; it exercises the Claude Code and Codex harnesses, live LiteLLM-backed `ask_human` selector calls, hidden-test verification, trace output, and deterministic process metrics.
+
+Latest local validation on May 1, 2026:
+
+- `npm test` passed.
+- `LITELLM_MODEL=bedrock/qwen.qwen3-32b-v1:0 npm run probe:litellm` returned `PONG`.
+- A live `ask_human` call against `data/clarification_smoke_kb.json` selected `prefix-format-convention`, returned the exact registry resolution, and replayed from cache.
+- The full Claude/Codex smoke run `clarification-smoke-bedrock-live` passed verification: both harnesses asked a clarification, `ask_human` answered from the registry, both patches passed hidden tests, ASK-F1 was `1.0000`, blocker recall was `1.0000`, and trace completeness checks were all true.
+
+## Readiness Bar
+
+This repo is ready for the next benchmark-expansion phase only when all of the following are true for a real run:
+
+- `npm test` passes.
+- `LITELLM_MODEL=bedrock/qwen.qwen3-32b-v1:0 npm run probe:litellm` succeeds through the configured LiteLLM path.
+- `npm run smoke:clarification:generate` followed by `npm run smoke:clarification:verify` produces live Claude Code and Codex trajectories for the synthetic smoke fixture.
+- The smoke run writes final patches/submissions, hidden-test results, `process_metrics.json`, `process_summary.md`, and complete request/response/audit trace records under `evals/<run_id>/`.
+
+Cached replay-only runs and mocked unit tests are useful guards, but they are not acceptance evidence for the live autonomy substrate.
+
+## Next Stages
+
+- Add more HiL-Bench-style underspecified SWE tasks with registry-backed blockers.
+- Expand the registry from blocker entries into broader decision-point entries.
+- Add more real harness adapters while preserving the normalized trace contract.
+- Build the LLM-as-judge failure taxonomy over saved traces, not rerun agents.
+- Calibrate task difficulty without tuning tasks to force clarification requests; failure to ask remains a measured failure.
+
 ## Tests
 
 ```sh
 npm test
 ```
 
-The test suite covers bounded generation concurrency, pass@k formulas, per-harness aggregation, stale evaluator output rejection, ambiguous instance-keyed fallback protection, large SWE-bench CSV fields, xdist/ANSI evaluator log parsing, and summary tail rendering.
+The test suite covers bounded generation concurrency, pass@k formulas, per-harness aggregation, stale evaluator output rejection, ambiguous instance-keyed fallback protection, large SWE-bench CSV fields, xdist/ANSI evaluator log parsing, summary tail rendering, deterministic `ask_human` edge cases, approval fallback routing, Codex app-server trace normalization, and process metrics computed from saved traces.

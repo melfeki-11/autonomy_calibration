@@ -225,3 +225,4 @@ evals/
 vendor/
 .cache/
 .codex-home/
+data/clarification_smoke.jsonl

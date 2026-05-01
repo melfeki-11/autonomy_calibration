@@ -13,6 +13,10 @@
     "passk": "node scripts/run_passk.mjs",
     "evaluate": "python3 scripts/evaluate_official.py",
     "summarize": "python3 scripts/summarize_passk.py",
+    "process-metrics": "python3 scripts/process_metrics.py",
+    "smoke:clarification:prepare": "node scripts/prepare_clarification_smoke.mjs",
+    "smoke:clarification:generate": "node scripts/prepare_clarification_smoke.mjs && node src/cli/generate.mjs --input data/clarification_smoke.jsonl --human-kb data/clarification_smoke_kb.json --harness all --limit 1 --run-id ${RUN_ID:-clarification-smoke} --codex-transport app-server --codex-approval-policy on-request",
+    "smoke:clarification:verify": "node scripts/verify_clarification_smoke.mjs --run-id ${RUN_ID:-clarification-smoke}",
     "smoke:pass3:generate": "node src/cli/generate.mjs --harness all --k 3 --limit 1 --run-id ${RUN_ID:-both-pass3-smoke} --attempt-timeout-ms ${HARNESS_ATTEMPT_TIMEOUT_MS:-900000}",
     "smoke:pass3:evaluate": "python3 scripts/evaluate_official.py --run-id ${RUN_ID:-both-pass3-smoke}",
     "smoke:pass3:summarize": "python3 scripts/summarize_passk.py --run-id ${RUN_ID:-both-pass3-smoke} --k 3",
@@ -21,6 +25,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.123",
     "@openai/codex": "^0.128.0",
-    "@openai/codex-sdk": "^0.128.0"
+    "@openai/codex-sdk": "^0.128.0",
+    "zod": "^4.4.1"
   }
 }

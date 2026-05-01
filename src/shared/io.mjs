@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { redactString } from "./redact.mjs";
 
+const appendLocks = new Map();
+const traceEventCounters = new Map();
+
 export async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
@@ -38,8 +41,20 @@ export async function writeText(filePath, text) {
 }
 
 export async function appendJsonl(filePath, value) {
-  await ensureDir(path.dirname(filePath));
-  await fs.appendFile(filePath, JSON.stringify(redactValue(value)) + "\n", "utf8");
+  const previous = appendLocks.get(filePath) || Promise.resolve();
+  const current = previous.then(async () => {
+    await ensureDir(path.dirname(filePath));
+    const redacted = redactValue(value);
+    const normalized = await maybeNormalizeTraceEvent(filePath, redacted);
+    await fs.appendFile(filePath, JSON.stringify(normalized) + "\n", "utf8");
+  });
+  const stored = current.catch(() => {});
+  appendLocks.set(filePath, stored);
+  try {
+    await current;
+  } finally {
+    if (appendLocks.get(filePath) === stored) appendLocks.delete(filePath);
+  }
 }
 
 function redactValue(value) {
@@ -48,10 +63,447 @@ function redactValue(value) {
   if (value && typeof value === "object") {
     const out = {};
     for (const [key, item] of Object.entries(value)) {
-      if (/(token|secret|api[_-]?key|auth|hil_bench)/i.test(key)) out[key] = "[REDACTED]";
+      if (/^is[_-]?secret$/i.test(key)) out[key] = item;
+      else if (/(token|secret|api[_-]?key|auth|hil_bench)/i.test(key)) out[key] = "[REDACTED]";
       else out[key] = redactValue(item);
     }
     return out;
   }
   return value;
+}
+
+async function maybeNormalizeTraceEvent(filePath, event) {
+  if (path.basename(filePath) !== "trajectory.jsonl") return event;
+  const traceMeta = inferTraceMeta(filePath);
+  if (!traceMeta) return event;
+  const eventIndex = await nextTraceEventIndex(filePath);
+  return normalizeTraceEvent({ event, eventIndex, traceMeta });
+}
+
+async function nextTraceEventIndex(filePath) {
+  if (!traceEventCounters.has(filePath)) {
+    let count = 0;
+    try {
+      const text = await fs.readFile(filePath, "utf8");
+      count = text.split(/\r?\n/).filter(Boolean).length;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    traceEventCounters.set(filePath, count);
+  }
+  const index = traceEventCounters.get(filePath);
+  traceEventCounters.set(filePath, index + 1);
+  return index;
+}
+
+function inferTraceMeta(filePath) {
+  const parts = path.resolve(filePath).split(path.sep);
+  const attempt = parts.at(-2) || "";
+  const instanceId = parts.at(-3);
+  const harness = parts.at(-4);
+  const trajectories = parts.at(-5);
+  const runId = parts.at(-6);
+  if (trajectories !== "trajectories" || !runId || !harness || !instanceId || !/^attempt-\d+$/.test(attempt)) return null;
+  return {
+    run_id: runId,
+    harness,
+    instance_id: instanceId,
+    attempt_index: Number(attempt.slice("attempt-".length)),
+  };
+}
+
+function normalizeTraceEvent({ event, eventIndex, traceMeta }) {
+  const timestamp = event.timestamp || event.started_at || event.ended_at || new Date().toISOString();
+  const normalized = {
+    ...event,
+    run_id: traceMeta.run_id,
+    instance_id: event.instance_id || traceMeta.instance_id,
+    harness: traceMeta.harness,
+    attempt_index: event.attempt_index || traceMeta.attempt_index,
+    event_index: eventIndex,
+    timestamp,
+    event_type: "unknown",
+    native_event_type: event.native_event_type || null,
+    native_payload: null,
+    normalized_request_type: null,
+    content: null,
+    tool_name: null,
+    tool_args: null,
+    observation: null,
+    question: null,
+    answer: null,
+    ask_human_status: "not_applicable",
+    matched_blocker_ids: [],
+    matched_source_ids: [],
+    approval_decision: "not_applicable",
+    approval_grounding: "not_applicable",
+    files_changed: [],
+    commands_run: [],
+    tests_run: [],
+    patch_path: null,
+    final_status: "unknown",
+    audit: {},
+  };
+
+  const type = String(event.type || "");
+  if (type === "attempt_start") {
+    normalized.event_type = "tool_result";
+    normalized.content = event.prompt || null;
+  } else if (type === "command_start" || type === "command_end") {
+    applyCommandEvent(normalized, event);
+  } else if (type === "sdk_message") {
+    applyClaudeSdkMessage(normalized, event.message);
+  } else if (type === "sdk_event") {
+    applyCodexSdkEvent(normalized, event.event);
+  } else if (type === "codex_app_server_request") {
+    applyCodexAppServerRequest(normalized, event.request);
+  } else if (type === "codex_app_server_response") {
+    normalized.event_type = "tool_result";
+    normalized.native_event_type = event.request_method ? `codex.${event.request_method}` : "codex.response";
+    normalized.native_payload = event.response || event.error || null;
+    normalized.content = event.request_method || null;
+    normalized.tool_args = { request_id: event.request_id ?? null };
+  } else if (type === "human_input_raw_event") {
+    applyHumanInputRequest(normalized, event, event.raw_event || null);
+  } else if (type === "human_input_normalized_event") {
+    applyHumanInputRequest(normalized, event, event.request || null);
+  } else if (type === "human_input_result") {
+    applyAskHumanResult(normalized, event);
+  } else if (type === "human_input_approval_decision") {
+    applyApprovalResult(normalized, event);
+  } else if (type === "submission") {
+    normalized.event_type = "patch_submit";
+    normalized.patch_path = event.patch_path || null;
+    normalized.content = event.prefix || null;
+    normalized.final_status = event.final_status || (event.sdk_error || event.generation_failed ? "error" : "unknown");
+  } else if (type === "smoke_hidden_test_result") {
+    normalized.event_type = "final";
+    normalized.content = event.command || null;
+    normalized.observation = [event.stdout, event.stderr].filter(Boolean).join("\n") || null;
+    normalized.tests_run = [
+      {
+        command: event.command || "python3 -m pytest -q",
+        cwd: event.cwd || null,
+        code: event.code,
+      },
+    ];
+    normalized.final_status = event.passed ? "pass" : "fail";
+  } else if (type === "attempt_end") {
+    normalized.event_type = "final";
+    normalized.final_status = event.final_status || (event.sdk_error || event.generation_failed ? "error" : "unknown");
+  } else if (type === "sdk_error" || type === "attempt_error") {
+    normalized.event_type = "error";
+    normalized.content = event.error || null;
+    normalized.final_status = "error";
+  } else if (type === "workspace_symlink" || type === "workspace_reuse" || type === "workspace_quarantine") {
+    normalized.event_type = "tool_result";
+    normalized.native_payload = event;
+  }
+
+  return normalized;
+}
+
+function applyCommandEvent(normalized, event) {
+  const command = [event.command, ...(Array.isArray(event.args) ? event.args : [])].filter(Boolean).join(" ");
+  const commandRecord = {
+    command: event.command,
+    args: Array.isArray(event.args) ? event.args : [],
+    cwd: event.cwd || null,
+    code: event.code,
+    signal: event.signal,
+    started_at: event.started_at,
+    ended_at: event.ended_at,
+  };
+  normalized.event_type = isTestCommand(command) ? "test" : "command";
+  normalized.content = command || null;
+  normalized.commands_run = command ? [commandRecord] : [];
+  normalized.tests_run = isTestCommand(command) ? [commandRecord] : [];
+  normalized.observation = [event.stdout, event.stderr].filter(Boolean).join("\n") || null;
+  normalized.native_payload = event;
+}
+
+function applyClaudeSdkMessage(normalized, message) {
+  normalized.native_event_type = message?.type ? `claude.${message.type}` : "claude.sdk_message";
+  normalized.native_payload = message || null;
+  normalized.content = extractText(message);
+  const toolUse = findClaudeContent(message, "tool_use");
+  const toolResult = findClaudeContent(message, "tool_result");
+  if (toolUse) {
+    normalized.event_type = "tool_call";
+    normalized.tool_name = toolUse.name || null;
+    normalized.tool_args = toolUse.input || null;
+  } else if (toolResult) {
+    normalized.event_type = "tool_result";
+    normalized.tool_name = toolResult.tool_use_id || null;
+    normalized.observation = extractText(toolResult);
+  } else if (message?.type === "result") {
+    normalized.event_type = "final";
+    normalized.final_status = message.subtype === "success" ? "unknown" : "error";
+  } else {
+    normalized.event_type = "tool_result";
+  }
+}
+
+function applyCodexSdkEvent(normalized, event) {
+  normalized.native_event_type = event?.method ? `codex.${event.method}` : event?.type || "codex.sdk_event";
+  normalized.native_payload = event || null;
+  if (event?.method) {
+    applyCodexAppServerNotification(normalized, event);
+    return;
+  }
+  const item = event?.item;
+  if (!item) {
+    normalized.event_type = event?.type === "turn.completed" ? "final" : "tool_result";
+    return;
+  }
+  if (item.type === "command_execution") {
+    const commandRecord = { command: item.command, code: item.exit_code, status: item.status };
+    normalized.event_type = isTestCommand(item.command) ? "test" : "command";
+    normalized.content = item.command || null;
+    normalized.commands_run = item.command ? [commandRecord] : [];
+    normalized.tests_run = isTestCommand(item.command) ? [commandRecord] : [];
+    normalized.observation = item.aggregated_output || null;
+  } else if (item.type === "file_change") {
+    normalized.event_type = "file_edit";
+    normalized.files_changed = Array.isArray(item.changes) ? item.changes.map((change) => change.path).filter(Boolean) : [];
+  } else if (item.type === "mcp_tool_call") {
+    normalized.event_type = item.status === "completed" || item.status === "failed" ? "tool_result" : "tool_call";
+    normalized.tool_name = `${item.server || ""}.${item.tool || ""}`.replace(/^\./, "");
+    normalized.tool_args = item.arguments ?? null;
+    normalized.observation = item.result || item.error || null;
+  } else if (item.type === "agent_message" || item.type === "reasoning" || item.type === "error") {
+    normalized.event_type = item.type === "error" ? "error" : "tool_result";
+    normalized.content = item.text || item.message || null;
+  }
+}
+
+function applyCodexAppServerRequest(normalized, request) {
+  const method = request?.method || "request";
+  const requestType = requestTypeForNativeEvent(method);
+  normalized.event_type = requestEventType(requestType);
+  normalized.native_event_type = `codex.${method}`;
+  normalized.native_payload = request || null;
+  normalized.normalized_request_type = requestType;
+  normalized.content = method;
+  normalized.question = questionForCodexServerRequest(request) || null;
+  normalized.tool_args = request
+    ? {
+        request_id: request.id ?? null,
+        params: request.params ?? null,
+      }
+    : null;
+}
+
+function applyCodexAppServerNotification(normalized, event) {
+  const method = event.method || "";
+  normalized.content = method;
+  const params = event.params || {};
+  const item = params.item;
+
+  if (method === "turn/completed") {
+    normalized.event_type = "final";
+    normalized.final_status = "unknown";
+    return;
+  }
+  if (method === "error" || method === "turn/error") {
+    normalized.event_type = "error";
+    normalized.content = params.message || params.error || method;
+    normalized.final_status = "error";
+    return;
+  }
+  if (method === "turn/diff/updated") {
+    const diff = String(params.diff || "");
+    normalized.event_type = "file_edit";
+    normalized.observation = diff || null;
+    normalized.files_changed = filesFromDiff(diff);
+    return;
+  }
+  if (method === "item/commandExecution/outputDelta" || method === "command/exec/outputDelta") {
+    normalized.event_type = "tool_result";
+    normalized.observation = params.delta || null;
+    return;
+  }
+  if (method === "item/fileChange/outputDelta" || method === "item/fileChange/patchUpdated") {
+    const text = String(params.delta || params.diff || "");
+    normalized.event_type = "file_edit";
+    normalized.observation = text || null;
+    normalized.files_changed = filesFromDiff(text);
+    return;
+  }
+  if (!item) {
+    normalized.event_type = "tool_result";
+    normalized.content = params.message || params.text || method;
+    return;
+  }
+
+  applyCodexItem(normalized, item);
+}
+
+function applyCodexItem(normalized, item) {
+  const itemType = String(item.type || "");
+  const canonicalType = itemType.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
+  if (canonicalType === "command_execution") {
+    const command = item.command || null;
+    const code = item.exit_code ?? item.exitCode;
+    const commandRecord = {
+      command,
+      cwd: item.cwd || null,
+      code,
+      status: item.status || null,
+      process_id: item.processId || item.process_id || null,
+      source: item.source || null,
+      duration_ms: item.durationMs || item.duration_ms || null,
+      command_actions: item.commandActions || item.command_actions || null,
+    };
+    normalized.event_type = isTestCommand(command) ? "test" : "command";
+    normalized.content = command;
+    normalized.commands_run = command ? [commandRecord] : [];
+    normalized.tests_run = isTestCommand(command) ? [commandRecord] : [];
+    normalized.observation = item.aggregatedOutput ?? item.aggregated_output ?? null;
+  } else if (canonicalType === "file_change") {
+    normalized.event_type = "file_edit";
+    normalized.files_changed = Array.isArray(item.changes) ? item.changes.map((change) => change.path).filter(Boolean) : [];
+    normalized.observation = item.error || null;
+  } else if (canonicalType === "mcp_tool_call") {
+    normalized.event_type = item.status === "completed" || item.status === "failed" ? "tool_result" : "tool_call";
+    normalized.tool_name = `${item.server || ""}.${item.tool || item.toolName || ""}`.replace(/^\./, "");
+    normalized.tool_args = item.arguments ?? null;
+    normalized.observation = item.result || item.error || null;
+  } else if (canonicalType === "agent_message" || canonicalType === "reasoning" || canonicalType === "user_message") {
+    normalized.event_type = "tool_result";
+    normalized.content = item.text || extractText(item) || null;
+  } else if (canonicalType === "error") {
+    normalized.event_type = "error";
+    normalized.content = item.message || item.text || null;
+  } else {
+    normalized.event_type = "tool_result";
+    normalized.content = item.text || item.message || itemType || null;
+  }
+}
+
+function questionForCodexServerRequest(request) {
+  const params = request?.params || {};
+  if (Array.isArray(params.questions)) {
+    return params.questions
+      .map((question) => `${question?.header ? `${question.header}: ` : ""}${question?.question || ""}`.trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+  return params.reason || params.message || params.url || null;
+}
+
+function applyHumanInputRequest(normalized, event, payload) {
+  const request = event.request || {};
+  const requestType = event.request_type || request.request_type || requestTypeForNativeEvent(event.native_event_type);
+  normalized.event_type = requestEventType(requestType);
+  normalized.native_event_type = event.native_event_type || request.native_event_type || null;
+  normalized.native_payload = payload;
+  normalized.normalized_request_type = requestType || "unknown";
+  normalized.question = event.question || request.normalized_question || request.question || null;
+  normalized.tool_args = {
+    request_id: event.request_id || request.request_id || null,
+    options: event.options || request.options || [],
+    context: event.context || request.context || {},
+  };
+}
+
+function applyAskHumanResult(normalized, event) {
+  const result = event.result || {};
+  const requestType = event.request_type || result.request_type || "clarification";
+  normalized.event_type = requestType === "elicitation" ? "clarification_answer" : `${requestType}_answer`;
+  normalized.native_event_type = event.native_event_type || null;
+  normalized.native_payload = result;
+  normalized.normalized_request_type = requestType;
+  normalized.answer = result.resolution || null;
+  normalized.ask_human_status = result.status || "unknown";
+  normalized.matched_blocker_ids =
+    result.blocker_id && result.blocker_id !== "UNKNOWN" ? [result.blocker_id] : Array.isArray(result.matched_blocker_ids) ? result.matched_blocker_ids : [];
+  normalized.matched_source_ids = result.source?.source_id ? [result.source.source_id] : [];
+  normalized.audit = {
+    prompt_hash: result.oracle?.prompt_hash || null,
+    kb_hash: result.source?.kb_hash || null,
+    model_id: result.oracle?.model_id || null,
+    cache_hit: Boolean(result.cache?.hit),
+    cache_key: result.cache?.key || null,
+  };
+}
+
+function applyApprovalResult(normalized, event) {
+  const requestType = event.request_type || "approval";
+  const decision = event.decision || {};
+  normalized.event_type = requestType === "permission" ? "permission_result" : "approval_result";
+  normalized.native_event_type = event.native_event_type || null;
+  normalized.native_payload = decision;
+  normalized.normalized_request_type = requestType;
+  normalized.approval_decision = decision.allowed ? "approved" : "denied";
+  normalized.approval_grounding = decision.grounding || decision.source || "fallback";
+  normalized.answer = decision.reason || null;
+  normalized.audit = {
+    kb_hash: decision.kb_hash || null,
+    approval_id: decision.approval_id || null,
+    registry_status: decision.registry_status || null,
+  };
+}
+
+function requestEventType(requestType) {
+  if (requestType === "approval") return "approval_request";
+  if (requestType === "permission") return "permission_request";
+  if (requestType === "unknown") return "tool_call";
+  return "clarification_request";
+}
+
+function requestTypeForNativeEvent(nativeEventType) {
+  const text = String(nativeEventType || "");
+  if (/permissions/i.test(text)) return "permission";
+  if (/approval|canUseTool|applyPatchApproval|execCommandApproval/i.test(text)) return "approval";
+  if (/elicitation/i.test(text)) return "elicitation";
+  if (/requestUserInput|AskUserQuestion|ask_human/i.test(text)) return "clarification";
+  return "unknown";
+}
+
+function eventTypeForNativeRequest(method) {
+  const requestType = requestTypeForNativeEvent(method);
+  return requestEventType(requestType);
+}
+
+function isTestCommand(command) {
+  return /(^|\s)(npm\s+test|npm\s+run\s+test|node\s+--test|pytest|python3?\s+-m\s+(pytest|unittest)|make\s+test|cargo\s+test|go\s+test)\b/.test(
+    String(command || "")
+  );
+}
+
+function filesFromDiff(diff) {
+  const files = [];
+  for (const line of String(diff || "").split(/\r?\n/)) {
+    const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (match) files.push(match[2]);
+  }
+  return [...new Set(files)];
+}
+
+function findClaudeContent(message, type) {
+  const content = message?.message?.content || message?.content;
+  if (!Array.isArray(content)) return null;
+  return content.find((item) => item?.type === type) || null;
+}
+
+function extractText(value) {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value.text === "string") return value.text;
+  const content = value.message?.content || value.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (typeof item?.text === "string") return item.text;
+        if (typeof item?.content === "string") return item.content;
+        if (Array.isArray(item?.content)) return item.content.map((part) => part?.text || "").join("");
+        return "";
+      })
+      .filter(Boolean);
+    return parts.length ? parts.join("\n") : null;
+  }
+  return null;
 }

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "description": "Registry-only human answers for the synthetic clarification smoke fixture.",
+  "entries": [
+    {
+      "id": "b_001",
+      "instance_id": "smoke_prefix_format",
+      "request_type": "clarification",
+      "blocker_id": "prefix-format-convention",
+      "type": "missing_information",
+      "description": "The product convention for configured label prefix placement and separator is omitted from the public task.",
+      "selector": "The agent asks about the required label prefix convention, including placement, separator, or no-prefix behavior.",
+      "trigger_questions": [
+        "Where should the configured prefix appear in formatted labels?",
+        "What separator should be used between prefix and item name?",
+        "What should format_label return when prefix is empty?"
+      ],
+      "selected_labels": [
+        "Prefix before name, separated by a colon-space"
+      ],
+      "resolution": "Use the prefix before the item name followed by ': '; if prefix is empty, return the name unchanged.",
+      "resolution_source": "human",
+      "action_critical": true,
+      "observable_after": null,
+      "commit_boundary": null
+    }
+  ]
+}
