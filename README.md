@@ -45,7 +45,7 @@ npm run passk -- --limit 731 --k 3 --harness all
 
 The runner refuses to start if `--limit` is larger than the number of rows in the local JSONL, so a full-set command cannot silently run only the smaller default sample.
 
-`npm run passk` writes artifacts under `evals/<run_id>/`, then prints `summary.md`. The generated `metrics.json` contains the machine-readable observed pass@k and unbiased pass@k values.
+`npm run passk` writes artifacts under `evals/<run_id>/`, then prints `summary.md`. The generated `metrics.json` contains the machine-readable observed pass@k and unbiased pass@k values. `summary.md` includes per-task success/failure and attempt status, and its final lines are a compact `Final Results` block with pass@k for each harness so `tail evals/<run_id>/summary.md` shows the headline numbers.
 
 ## Setup
 
@@ -154,6 +154,8 @@ The summarizer reports:
 
 - observed top-k pass rate: whether any of the first `k` attempts for an instance passed
 - standard unbiased pass@k estimator: `1 - C(n-c, k) / C(n, k)` when `n >= k`
+- per-task success/failure with attempt-level statuses
+- a final tail block with pass@k and unbiased pass@k per harness
 
 Runs generated with `--harness all` are summarized per harness, so Claude Code and Codex attempts for the same instance are never mixed. Multi-attempt runs use per-prefix official evaluator artifacts instead of the evaluator's top-level `eval_results.json`, because that file is keyed only by `instance_id`. Stale evaluator outputs older than `predictions.json` or the latest evaluator command are rejected.
 
@@ -200,4 +202,4 @@ npm run smoke:pass3:summarize
 npm test
 ```
 
-The test suite covers bounded generation concurrency, pass@k formulas, per-harness aggregation, stale evaluator output rejection, ambiguous instance-keyed fallback protection, and xdist/ANSI evaluator log parsing.
+The test suite covers bounded generation concurrency, pass@k formulas, per-harness aggregation, stale evaluator output rejection, ambiguous instance-keyed fallback protection, large SWE-bench CSV fields, xdist/ANSI evaluator log parsing, and summary tail rendering.

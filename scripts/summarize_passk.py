@@ -8,6 +8,7 @@ import ast
 import csv
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,16 @@ STATUS_RE = re.compile(r"\b(PASSED|FAILED|SKIPPED|ERROR|XPASS|XFAIL)\b\s+(test/[
 TEST_NAME_RE = re.compile(r"\b(test/[^\s]+(?:::[^\s]+)+)")
 ALL_PASSED_RE = re.compile(r"\b(\d+) passed in [0-9.]+s\b")
 PASSING_STATUSES = {"PASSED", "XPASS"}
+
+
+def raise_csv_field_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
 
 
 def load_jsonish(path: Path) -> Any | None:
@@ -179,6 +190,7 @@ def load_raw_samples(samples_path: Path) -> dict[str, dict[str, Any]]:
     if samples_path.suffix == ".jsonl":
         rows = load_jsonish(samples_path) or []
         return {str(row["instance_id"]): row for row in rows}
+    raise_csv_field_limit()
     with samples_path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     return {str(row["instance_id"]): row for row in rows}
@@ -288,10 +300,31 @@ def render_metric_lines(metrics: dict[str, Any]) -> list[str]:
         rendered = "missing" if value is None else f"{value:.4f}"
         lines.append(f"- unbiased pass@{k}: {rendered}")
     lines.append("")
-    lines.append("Per-instance attempts:")
+    lines.append("Per-task attempts:")
     for instance_id, attempts in sorted(metrics["instances"].items()):
+        task_success = any(item["resolved"] is True for item in attempts)
         status = ", ".join(f"{item['attempt_index']}={'missing' if item['resolved'] is None else item['resolved']}" for item in attempts)
-        lines.append(f"- {instance_id}: {status}")
+        lines.append(f"- {instance_id}: success={task_success}; attempts: {status}")
+    return lines
+
+
+def render_result_line(label: str, metrics: dict[str, Any]) -> str:
+    pass_parts = [f"pass@{k}={value:.4f}" for k, value in metrics["pass_at_k"].items()]
+    unbiased_parts = [
+        f"unbiased_pass@{k}={'missing' if value is None else f'{value:.4f}'}"
+        for k, value in metrics["unbiased_pass_at_k"].items()
+    ]
+    missing = int(metrics.get("missing_eval_attempts") or 0)
+    return f"- {label}: {', '.join(pass_parts)}; {', '.join(unbiased_parts)}; missing_eval_attempts={missing}"
+
+
+def render_final_results_lines(metrics: dict[str, Any]) -> list[str]:
+    lines = ["## Final Results"]
+    if "harnesses" in metrics:
+        for harness, harness_metrics in metrics["harnesses"].items():
+            lines.append(render_result_line(harness, harness_metrics))
+    else:
+        lines.append(render_result_line(str(metrics.get("harness") or "overall"), metrics))
     return lines
 
 
@@ -338,6 +371,8 @@ def main() -> None:
             lines.append("")
     else:
         lines.extend(render_metric_lines(metrics))
+        lines.append("")
+    lines.extend(render_final_results_lines(metrics))
     out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(out_json)
     print(out_md)

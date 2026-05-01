@@ -8,6 +8,9 @@ from scripts.passk import build_attempts, build_harness_attempts, compute_passk,
 from scripts.summarize_passk import (
     collect_attempt_outputs,
     filter_ambiguous_instance_results,
+    load_raw_samples,
+    render_final_results_lines,
+    render_metric_lines,
     required_test_passed,
     scheduled_tests_from_log,
     statuses_from_logs,
@@ -196,6 +199,25 @@ class PassKTest(unittest.TestCase):
             os.utime(command, (3, 3))
             with self.assertRaises(SystemExit):
                 collect_attempt_outputs(run_dir, root / "samples.csv", predictions)
+
+    def test_load_raw_samples_accepts_large_csv_fields(self):
+        with TemporaryDirectory() as tmpdir:
+            samples = Path(tmpdir) / "samples.csv"
+            large_statement = "x" * 200000
+            samples.write_text(f"instance_id,problem_statement,fail_to_pass,pass_to_pass\nlarge,{large_statement},[],[]\n", encoding="utf-8")
+            rows = load_raw_samples(samples)
+        self.assertEqual(rows["large"]["problem_statement"], large_statement)
+
+    def test_summary_renders_per_task_success_and_tail_results(self):
+        predictions = [
+            {"harness": "codex", "instance_id": "a", "prefix": "a-1", "attempt_index": 1},
+            {"harness": "codex", "instance_id": "a", "prefix": "a-2", "attempt_index": 2},
+        ]
+        metrics = compute_passk(build_attempts(predictions, {"a-1": False, "a-2": True}), [1, 2])
+        lines = render_metric_lines(metrics)
+        self.assertIn("- a: success=True; attempts: 1=False, 2=True", lines)
+        final_lines = render_final_results_lines({"harnesses": {"codex": metrics}})
+        self.assertEqual(final_lines[-1], "- codex: pass@1=0.0000, pass@2=1.0000; unbiased_pass@1=0.5000, unbiased_pass@2=1.0000; missing_eval_attempts=0")
 
 
 if __name__ == "__main__":
